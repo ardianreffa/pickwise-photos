@@ -23,11 +23,13 @@ DARK_MEAN = 40.0         # mean luminance below this, with no bright area -> too
 LOWKEY_MEAN, LOWKEY_DARK = 75.0, 0.50   # mostly dark ...
 SILHOUETTE_BRIGHT = 0.03                 # ... with a bright area -> silhouette / low-key
 BRIGHT_MEAN, BRIGHT_CLIPPED = 200.0, 0.25
-PARTLY_BLOWN = 0.12
+PARTLY_BLOWN = 0.20      # share of pure white that makes a photo a "maybe"
+WHITE_NOTE = 0.10        # above this, just mention it
 
-BURST_SECONDS = 4.0      # photos closer than this in time may be one burst
-BURST_HASH = 12          # max dHash distance for photos in the same burst
-NO_TIME_HASH = 8         # stricter when we cannot trust capture times
+BURST_GAP = 2.0          # max seconds since the PREVIOUS frame to stay in the same burst;
+                         # the pause while a subject changes pose starts a new group
+BURST_HASH = 12          # max dHash distance to the previous frame within a burst
+NO_TIME_HASH = 6         # stricter when we cannot trust capture times
 
 DEFAULT_PREFS = {"blur_scale": 1.0, "dark_ok": 0.0, "bright_ok": 0.0}
 
@@ -81,6 +83,8 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
             reject.append("too bright: large areas are blown out to white")
     elif clipped > PARTLY_BLOWN and not bright_ok:
         maybe.append(f"partly blown out: {round(clipped * 100)}% of the photo is pure white")
+    elif clipped > WHITE_NOTE and not bright_ok:
+        notes.append(f"{round(clipped * 100)}% of the photo is pure white (sky or highlights)")
     return reject, maybe, notes
 
 
@@ -111,8 +115,8 @@ def group_bursts(metrics: list[dict]) -> list[list[dict]]:
             last = groups[-1][-1]
             both_exif = m["time_source"] == "exif" and last["time_source"] == "exif"
             gap = abs(m["taken_at"] - last["taken_at"])
-            dist = min(hamming(m["dhash"], g["dhash"]) for g in groups[-1])
-            if (both_exif and gap <= BURST_SECONDS and dist <= BURST_HASH) or dist <= NO_TIME_HASH:
+            dist = hamming(m["dhash"], last["dhash"])  # previous frame only: no chaining across poses
+            if (dist <= BURST_HASH and gap <= BURST_GAP) if both_exif else dist <= NO_TIME_HASH:
                 groups[-1].append(m)
                 placed = True
         if not placed:

@@ -46,7 +46,7 @@ RAW_EXT = {
 }
 SUPPORTED_EXT = JPEG_EXT | HEIF_EXT | OTHER_EXT | RAW_EXT
 
-ANALYSIS_VERSION = 2  # bump when measurements change, so cached results are recomputed
+ANALYSIS_VERSION = 3  # bump when measurements change, so cached results are recomputed
 
 JPEG_FORMATS = {"JPEG", "MPO"}  # MPO = JPEG with extra frames (iPhone HDR gain maps)
 
@@ -58,6 +58,7 @@ GRID = 6           # sharpness is measured on a GRID x GRID tile grid
 _EXIF_DATETIME_ORIGINAL = 0x9003
 _EXIF_DATETIME = 0x0132
 _EXIF_IFD = 0x8769
+_EXIF_SUBSEC_ORIGINAL = 0x9291
 
 
 @dataclass
@@ -170,9 +171,10 @@ def _capture_time(im: Image.Image) -> Optional[float]:
         exif = im.getexif()
     except Exception:
         return None
-    raw = None
+    raw, subsec = None, None
     try:
-        raw = exif.get_ifd(_EXIF_IFD).get(_EXIF_DATETIME_ORIGINAL)
+        ifd = exif.get_ifd(_EXIF_IFD)
+        raw, subsec = ifd.get(_EXIF_DATETIME_ORIGINAL), ifd.get(_EXIF_SUBSEC_ORIGINAL)
     except Exception:
         raw = None
     raw = raw or exif.get(_EXIF_DATETIME)
@@ -180,9 +182,16 @@ def _capture_time(im: Image.Image) -> Optional[float]:
         return None
     try:
         text = raw.decode() if isinstance(raw, bytes) else str(raw)
-        return datetime.strptime(text.strip()[:19], "%Y:%m:%d %H:%M:%S").timestamp()
+        t = datetime.strptime(text.strip()[:19], "%Y:%m:%d %H:%M:%S").timestamp()
     except Exception:
         return None
+    try:  # phones record fractions of a second, which tells bursts from pauses
+        digits = "".join(ch for ch in str(subsec.decode() if isinstance(subsec, bytes) else subsec or "") if ch.isdigit())
+        if digits:
+            t += int(digits) / (10 ** len(digits))
+    except Exception:
+        pass
+    return t
 
 
 # ── Measurements ─────────────────────────────────────────────────────────────

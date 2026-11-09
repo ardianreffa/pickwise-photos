@@ -175,3 +175,17 @@ def test_scenery_needs_broad_focus(folder, tmp_path):
     scenery = engine.decide(m, {"scene": "scenery"})[0]
     assert people["decision"] == "pick"
     assert scenery["decision"] != "pick"
+
+
+def test_pose_change_pause_starts_new_burst(tmp_path):
+    """Two poses shot back to back: a pause between them must split the burst."""
+    t0 = datetime(2026, 11, 8, 17, 0, 0)
+    pose_a, pose_b = scene(20), scene(20).transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    pose_b = pose_a.copy()
+    pose_b.paste(scene(21).crop((300, 150, 600, 450)), (300, 150))  # subject moved
+    for i in range(3):
+        save(pose_a, tmp_path / f"a_{i}.jpg", t0 + timedelta(seconds=i))
+        save(pose_b, tmp_path / f"b_{i}.jpg", t0 + timedelta(seconds=6 + i))
+    d = by_name(engine.decide(metrics(tmp_path)))
+    assert d["a_0.jpg"]["group"] != d["b_0.jpg"]["group"]
+    assert sum(x["decision"] == "pick" for x in d.values()) == 2

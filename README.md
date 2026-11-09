@@ -38,7 +38,7 @@ Hermes:  Noted. Pickwise will be more tolerant of soft shots like that one. Want
 |---|---|
 | Focus and camera shake | A "re-blur" test on the most detailed parts of the photo: a sharp photo loses most of its fine detail when blurred a little more, a blurry one barely changes. Measuring the most detailed areas means a sharp subject on a soft background still counts as sharp. |
 | Exposure | Too dark, blown-out highlights, and low-key or silhouette shots, which are flagged as "maybe" instead of rejected. |
-| Bursts and near-duplicates | Capture time plus a perceptual hash. Only the best frame of each group is picked. |
+| Bursts and near-duplicates | Capture time (to the fraction of a second) plus a perceptual hash, compared frame to frame: a photo joins a burst only if it was taken within 2 seconds of the previous one and looks like it. The pause while a subject changes pose starts a new group, so every pose keeps its best frame. |
 | Scene | `people` (default): one sharp area is enough, so a blurred background is fine. `scenery`: most of the frame must be sharp, so a landscape that is only sharp in one corner is flagged. |
 | Ranking | A 0-100 score from sharpness and exposure, used for "best N" and inside bursts. |
 
@@ -60,6 +60,9 @@ hermes plugins install ardianreffa/pickwise-photos --enable
 Pickwise uses Pillow and pillow-heif, which already ship with Hermes, so the install adds
 nothing heavy. Requires Hermes 0.23.0 or newer. If Hermes itself runs the install for you
 (non-interactive), add `--yes-deps` so the dependency question is answered up front.
+
+After `hermes plugins update pickwise-photos`, run `hermes gateway restart` (or restart
+Hermes Desktop) so the running gateway loads the new code.
 
 ## Use
 
