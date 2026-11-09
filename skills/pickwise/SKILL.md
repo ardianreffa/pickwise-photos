@@ -9,6 +9,7 @@ description: How to cull a folder of photos with Pickwise Photos, from brief to 
    parameters for `pickwise_review`: dark or night or concert shots are fine -> `keep_dark`;
    snow, white studio or beach -> `keep_bright`; panning or motion blur on purpose ->
    `allow_soft`; "best N" -> `count`; "keep every variation" -> `dedupe: false`;
+   "keep the best 3 of each burst" -> `per_burst: 3`;
    landscapes, architecture or interiors -> `scene: scenery`; people, events, sport or
    pets -> `scene: people`.
    Pass the user's own words as `brief_note`.

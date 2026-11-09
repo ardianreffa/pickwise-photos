@@ -152,6 +152,7 @@ class Pickwise:
                 "keep_bright": bool(args.get("keep_bright")),
                 "allow_soft": bool(args.get("allow_soft")),
                 "dedupe": args.get("dedupe", True) is not False,
+                "per_burst": max(1, min(20, int(args.get("per_burst") or 1))),
                 "strictness": args.get("strictness") or "normal",
                 "scene": args.get("scene") if args.get("scene") in ("people", "scenery") else "auto",
             }

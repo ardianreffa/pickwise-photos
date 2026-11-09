@@ -189,3 +189,17 @@ def test_pose_change_pause_starts_new_burst(tmp_path):
     d = by_name(engine.decide(metrics(tmp_path)))
     assert d["a_0.jpg"]["group"] != d["b_0.jpg"]["group"]
     assert sum(x["decision"] == "pick" for x in d.values()) == 2
+
+
+def test_keep_best_n_per_burst(folder):
+    one = by_name(engine.decide(metrics(folder)))
+    two = by_name(engine.decide(metrics(folder), {"per_burst": 2}))
+    picks = lambda d: sum(d[f"burst_{i}.jpg"]["decision"] == "pick" for i in range(3))
+    assert picks(one) == 1 and picks(two) == 2
+    assert two["burst_2.jpg"]["decision"] != "pick"  # the soft frame still loses
+
+
+def test_learning_is_gradual():
+    decision = {"decision": "maybe", "reasons": ["blurry in most of the frame (motion or missed focus): check it"]}
+    prefs, change = engine.learn({}, decision, "keep", {"sharpness": 0.05, "brightness": 120})
+    assert 0.84 <= prefs["blur_scale"] < 1.0 and "a little" in change

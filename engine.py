@@ -132,6 +132,10 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
     overrides = overrides or {}
     dedupe = brief.get("dedupe", True)
     count = brief.get("count")
+    try:
+        per_burst = max(1, int(brief.get("per_burst") or 1))
+    except (TypeError, ValueError):
+        per_burst = 1
 
     rows: dict[str, dict] = {}
     for gi, group in enumerate(group_bursts(metrics), start=1):
@@ -144,14 +148,16 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
                 "sharpness": m["sharpness"], "brightness": m["brightness"],
             }
         candidates = [rows[m["path"]] for m in group if not rows[m["path"]]["reject"]]
-        if dedupe and len(candidates) > 1:
-            best = max(candidates, key=lambda r: (not r["maybe"], r["score"]))
-            for r in candidates:
-                if r is not best:
-                    r["maybe"].append(
-                        f"near-duplicate of {best['name']}, which scored higher "
-                        f"({best['score']} vs {r['score']})")
-                    r["duplicate_of"] = best["name"]
+        if dedupe and len(candidates) > per_burst:
+            ranked = sorted(candidates, key=lambda r: (not r["maybe"], r["score"]), reverse=True)
+            kept, best = ranked[:per_burst], ranked[0]
+            for r in ranked[per_burst:]:
+                r["maybe"].append(
+                    f"near-duplicate of {best['name']}, which scored higher "
+                    f"({best['score']} vs {r['score']})" if per_burst == 1 else
+                    f"similar burst frame; the {per_burst} best of this burst "
+                    f"({', '.join(k['name'] for k in kept)}) scored higher")
+                r["duplicate_of"] = best["name"]
 
     for r in rows.values():
         if r["reject"]:
@@ -197,8 +203,11 @@ def learn(prefs: dict, decision: dict, verdict: str, metrics: dict) -> tuple[dic
             base = (BLUR_THRESHOLD if "no part" in reasons
                     else MOSTLY_BLURRY if ("most of" in reasons) else SOFT_THRESHOLD)
             target = (sharp / base) * 0.95
-            prefs["blur_scale"] = round(max(0.3, min(prefs["blur_scale"] * 0.85, target)), 3)
-            change = "will be more tolerant of soft photos like this one"
+            # Learn gradually: one correction moves the tolerance by at most 15%.
+            current = prefs["blur_scale"]
+            prefs["blur_scale"] = round(max(0.3, min(current, max(current * 0.85, target))), 3)
+            change = ("will be a little more tolerant of soft photos like this one"
+                      if prefs["blur_scale"] < current else "remembered this photo only")
         elif dark or "dark" in reasons or "silhouette" in reasons:
             prefs["dark_ok"] = prefs.get("dark_ok", 0) + 1
             change = ("will keep dark and silhouette shots from now on" if prefs["dark_ok"] >= 2
@@ -210,5 +219,5 @@ def learn(prefs: dict, decision: dict, verdict: str, metrics: dict) -> tuple[dic
     elif verdict == "reject" and decision.get("decision") == "pick":
         if sharp < SOFT_THRESHOLD * prefs["blur_scale"] * 1.5:
             prefs["blur_scale"] = round(min(2.0, prefs["blur_scale"] * 1.15), 3)
-            change = "will be stricter about sharpness"
+            change = "will be a little stricter about sharpness"
     return prefs, change

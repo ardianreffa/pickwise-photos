@@ -11,7 +11,7 @@ REVIEW = {
         "to cull, sort, choose, pick or clean up photos. Translate the user's brief into the "
         "parameters, e.g. 'concert, dark is fine' -> keep_dark=true; 'motion blur is on purpose' "
         "-> allow_soft=true; 'best 30 for Instagram' -> count=30; 'landscapes from my hike' -> "
-        "scene=scenery. Pickwise measures focus anywhere in the frame; it cannot tell whether focus "
+        "scene=scenery; 'keep the best 3 of each burst' -> per_burst=3. Pickwise measures focus anywhere in the frame; it cannot tell whether focus "
         "landed on the person or on the background. If the brief asks for something these "
         "parameters cannot judge (smiles, composition, who is in the photo, focus on the subject), "
         "say so plainly instead of pretending. Reasons are in English; relay them in the user's language."
@@ -30,7 +30,9 @@ REVIEW = {
             "allow_soft": {"type": "boolean",
                            "description": "Softness or motion blur is intentional (panning, slow shutter, dreamy look): never reject for blur, mark as maybe at most."},
             "dedupe": {"type": "boolean",
-                       "description": "Keep only the best photo of each burst / near-duplicate group (default true)."},
+                       "description": "Keep only the best photo(s) of each burst / near-duplicate group (default true). false keeps every frame."},
+            "per_burst": {"type": "integer", "minimum": 1, "maximum": 20,
+                          "description": "How many of the best frames to keep from each burst (default 1). Use it when the photographer bursts to choose between expressions or moments, e.g. 'keep the best 3 of each burst'."},
             "scene": {"type": "string", "enum": ["auto", "people", "scenery"],
                       "description": "What the photos are of. 'people' (portraits, events, sport, pets): one sharp area is enough, a blurred background is fine. 'scenery' (landscapes, architecture, interiors): most of the frame should be sharp. Default auto behaves like people. Ask the user if it is unclear and it matters."},
             "strictness": {"type": "string", "enum": ["relaxed", "normal", "strict"],
