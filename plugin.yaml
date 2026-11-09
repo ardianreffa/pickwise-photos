@@ -1,0 +1,24 @@
+name: pickwise-photos
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >-
+  Pick your best photos, with reasons. Reviews a folder locally (JPEG, HEIC, RAW previews),
+  flags blurry, too-dark and blown-out shots, keeps the best of each burst, explains every
+  decision, follows a plain-language brief and learns from your corrections. Never deletes
+  or edits photos; nothing leaves your computer.
+author: ardianreffa
+license: MIT
+homepage: https://github.com/ardianreffa/pickwise-photos
+tags: [photos, photography, culling, local, images]
+requires_hermes: ">=0.23.0"
+provides_tools:
+  - pickwise_review
+  - pickwise_apply
+  - pickwise_feedback
+  - pickwise_preferences
+  - pickwise_undo
+provides_hooks: []
+python_dependencies:
+  - "Pillow>=11.0,<14"
+  - "pillow-heif>=1.4,<2"
