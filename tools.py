@@ -112,8 +112,10 @@ class Pickwise:
                 todo.append(p)
                 continue
             row = conn.execute("SELECT size, mtime, data FROM metrics WHERE path = ?", (str(p),)).fetchone()
-            if row and row[0] == st.st_size and abs(row[1] - st.st_mtime) < 1e-6:
-                cached[str(p)] = json.loads(row[2])
+            data = json.loads(row[2]) if row else None
+            if (data and row[0] == st.st_size and abs(row[1] - st.st_mtime) < 1e-6
+                    and data.get("v") == analysis.ANALYSIS_VERSION):
+                cached[str(p)] = data
             else:
                 todo.append(p)
         if todo:
@@ -121,7 +123,7 @@ class Pickwise:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 fresh = list(pool.map(analysis.analyze, todo))
             for m in fresh:
-                d = m.to_dict()
+                d = {**m.to_dict(), "v": analysis.ANALYSIS_VERSION}
                 cached[m.path] = d
                 if not m.error:
                     conn.execute("INSERT OR REPLACE INTO metrics(path, size, mtime, data) VALUES (?,?,?,?)",
@@ -151,6 +153,7 @@ class Pickwise:
                 "allow_soft": bool(args.get("allow_soft")),
                 "dedupe": args.get("dedupe", True) is not False,
                 "strictness": args.get("strictness") or "normal",
+                "scene": args.get("scene") if args.get("scene") in ("people", "scenery") else "auto",
             }
             prefs = self._state_get("prefs", dict(engine.DEFAULT_PREFS))
             overrides = self._state_get("overrides", {})

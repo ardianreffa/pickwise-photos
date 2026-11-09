@@ -16,6 +16,7 @@ from .analysis import hamming
 # (crisp photos score about 0.85-0.97, soft ones 0.05-0.3, blurry ones near 0).
 # The user's corrections scale them through prefs["blur_scale"].
 BLUR_THRESHOLD = 0.20   # below this: nothing in the photo is in focus -> blurry
+MOSTLY_BLURRY = 0.35    # below this: blurry in most of the frame -> maybe, check it
 SOFT_THRESHOLD = 0.50   # below this: usable but soft
 
 DARK_MEAN = 40.0         # mean luminance below this, with no bright area -> too dark
@@ -42,16 +43,22 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
         scale *= 0.75
     elif brief.get("strictness") == "strict":
         scale *= 1.3
-    blur_t, soft_t = BLUR_THRESHOLD * scale, SOFT_THRESHOLD * scale
-    sharp = m["sharpness"]
+    blur_t, mostly_t, soft_t = BLUR_THRESHOLD * scale, MOSTLY_BLURRY * scale, SOFT_THRESHOLD * scale
+    scenery = brief.get("scene") == "scenery"
+    sharp = m.get("sharpness_broad", m["sharpness"]) if scenery else m["sharpness"]
     if sharp < blur_t:
         if brief.get("allow_soft"):
             maybe.append("blurry, kept as a maybe because soft or motion blur is allowed for this set")
         else:
             reject.append("blurry: no part of the photo is in focus")
+    elif sharp < mostly_t:
+        if not brief.get("allow_soft"):
+            maybe.append("blurry in most of the frame (motion or missed focus): check it"
+                         if not scenery else "most of the scene is out of focus: check it")
     elif sharp < soft_t:
         if not brief.get("allow_soft"):
-            maybe.append("slightly soft: focus or camera shake")
+            maybe.append("slightly soft: focus or camera shake" if not scenery
+                         else "only a small part of the scene is sharp")
 
     mean, clipped = m["brightness"], m["highlights_clipped"]
     dark_share, bright_share = m.get("dark_share", 0.0), m.get("bright_share", 0.0)
@@ -77,11 +84,12 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
     return reject, maybe, notes
 
 
-def quality_score(m: dict) -> float:
+def quality_score(m: dict, scene: str = "") -> float:
     """0..100. Sharpness dominates; exposure problems subtract."""
     if m.get("error"):
         return 0.0
-    sharp = 55.0 * min(1.0, m["sharpness"] / 0.85)
+    s = m.get("sharpness_broad", m["sharpness"]) if scene == "scenery" else m["sharpness"]
+    sharp = 55.0 * min(1.0, s / 0.85)
     sharp += 5.0 * min(1.0, math.log1p(m.get("detail", 0.0)) / math.log1p(3000.0))
     mean = m["brightness"]
     exposure = 40.0 - min(40.0, abs(mean - 120.0) / 3.0)
@@ -127,7 +135,7 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
             reject, maybe, notes = _flags(m, brief, prefs)
             rows[m["path"]] = {
                 "name": m["name"], "path": m["path"], "kind": m["kind"],
-                "group": gi, "group_size": len(group), "score": quality_score(m),
+                "group": gi, "group_size": len(group), "score": quality_score(m, brief.get("scene", "")),
                 "reject": reject, "maybe": maybe, "notes": notes,
                 "sharpness": m["sharpness"], "brightness": m["brightness"],
             }
@@ -181,8 +189,9 @@ def learn(prefs: dict, decision: dict, verdict: str, metrics: dict) -> tuple[dic
     reasons = " ".join(decision.get("reasons", []))
     change = "remembered this photo only"
     if verdict == "keep" and decision.get("decision") != "pick":
-        if "blurry" in reasons or "soft" in reasons:
-            base = BLUR_THRESHOLD if "blurry" in reasons else SOFT_THRESHOLD
+        if "blurry" in reasons or "soft" in reasons or "out of focus" in reasons or "small part" in reasons:
+            base = (BLUR_THRESHOLD if "no part" in reasons
+                    else MOSTLY_BLURRY if ("most of" in reasons) else SOFT_THRESHOLD)
             target = (sharp / base) * 0.95
             prefs["blur_scale"] = round(max(0.3, min(prefs["blur_scale"] * 0.85, target)), 3)
             change = "will be more tolerant of soft photos like this one"

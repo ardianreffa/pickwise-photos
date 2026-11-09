@@ -46,6 +46,10 @@ RAW_EXT = {
 }
 SUPPORTED_EXT = JPEG_EXT | HEIF_EXT | OTHER_EXT | RAW_EXT
 
+ANALYSIS_VERSION = 2  # bump when measurements change, so cached results are recomputed
+
+JPEG_FORMATS = {"JPEG", "MPO"}  # MPO = JPEG with extra frames (iPhone HDR gain maps)
+
 MAX_FILE_BYTES = 400 * 1024 * 1024  # skip anything bigger than 400 MB
 SHARP_SIZE = 1536  # long edge used for the sharpness measurement
 EXPO_SIZE = 256    # long edge used for the exposure histogram
@@ -68,6 +72,7 @@ class PhotoMetrics:
     taken_at: float        # epoch seconds (EXIF if available, else mtime)
     time_source: str       # exif | mtime
     sharpness: float       # 0..1, share of fine detail lost when re-blurred (1 = crisp)
+    sharpness_broad: float # 0..1, same test over the sharpest 40% of the frame (scenery)
     detail: float          # Laplacian energy of the most detailed regions (tie-breaker)
     brightness: float      # 0..255 mean luminance
     shadows_clipped: float # share of pixels <= 6
@@ -98,35 +103,44 @@ def kind_of(path: Path) -> Optional[str]:
 
 
 def _largest_embedded_jpeg(data: bytes) -> Optional[Image.Image]:
-    """Return the biggest JPEG embedded in a RAW file, or None.
+    """Return the biggest decodable JPEG embedded in a RAW file, or None.
 
-    Cameras store a full-size (or near full-size) JPEG preview inside the RAW
-    container. We scan for JPEG start markers, let Pillow parse the header of
-    each candidate, and keep the one with the most pixels. Pillow stops at the
-    JPEG end marker, so the trailing RAW data is ignored.
+    Cameras and phones store a JPEG preview inside the RAW container. We scan
+    for JPEG start markers and let Pillow parse each candidate's header. DNG
+    files can also hold the raw sensor data as lossless-JPEG tiles, which
+    Pillow cannot decode, so candidates are tried from largest to smallest and
+    the first one that actually decodes wins. Colour images always beat
+    grayscale ones: iPhone DNGs also embed grayscale masks and gain maps. Pillow stops at the JPEG end
+    marker, so trailing RAW data is ignored.
     """
-    best: Optional[Image.Image] = None
-    best_px = 0
+    candidates: list[tuple[int, int, int]] = []  # (is_colour, pixels, offset)
     start = 0
-    tried = 0
-    while tried < 64:
+    while len(candidates) < 512:
         pos = data.find(b"\xff\xd8\xff", start)
         if pos < 0:
             break
         start = pos + 3
-        tried += 1
         try:
             im = Image.open(io.BytesIO(data[pos:]))
-            if im.format != "JPEG":
-                continue
-            px = im.size[0] * im.size[1]
-            if px > best_px:
-                best, best_px = im, px
+            # iPhone and many cameras store the main preview as MPO (a JPEG with an
+            # HDR gain map attached); grayscale JPEGs are depth maps or masks.
+            if im.format in JPEG_FORMATS and im.mode in ("RGB", "L", "CMYK", "YCbCr"):
+                candidates.append((int(im.mode != "L"), im.size[0] * im.size[1], pos))
         except Exception:
             continue
-    if best is not None and best_px < 320 * 240:
-        return None  # only a tiny thumbnail: not enough to judge sharpness
-    return best
+    candidates.sort(reverse=True)
+    for _colour, px, pos in candidates[:8]:
+        if px < 320 * 240:
+            break  # only tiny thumbnails left: not enough to judge sharpness
+        try:
+            im = Image.open(io.BytesIO(data[pos:]))
+            probe = Image.open(io.BytesIO(data[pos:]))
+            probe.draft("L", (64, 64))
+            probe.load()  # proves the stream decodes (lossless-JPEG tiles fail here)
+            return im
+        except Exception:
+            continue
+    return None
 
 
 def open_photo(path: Path, kind: str) -> Image.Image:
@@ -141,7 +155,7 @@ def open_photo(path: Path, kind: str) -> Image.Image:
         if kind == "heif" and not HEIF_OK:
             raise ValueError("HEIC support (pillow-heif) is not available")
         im = Image.open(path)
-    if im.format == "JPEG":
+    if im.format in JPEG_FORMATS:
         # Let libjpeg decode at reduced size: much faster for 24-60 MP files.
         try:
             im.draft("RGB", (SHARP_SIZE * 2, SHARP_SIZE * 2))
@@ -184,14 +198,16 @@ def _fit(im: Image.Image, long_edge: int) -> Image.Image:
     return im.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.BILINEAR)
 
 
-def measure_sharpness(gray: Image.Image) -> tuple[float, float]:
-    """Return (sharpness 0..1, detail energy).
+def measure_sharpness(gray: Image.Image) -> tuple[float, float, float]:
+    """Return (sharpness 0..1, broad sharpness 0..1, detail energy).
 
     "Re-blur" test: blur the photo a little more and see how much fine detail
     disappears. A crisp photo loses most of its edge energy; a photo that is
     already blurry barely changes. The ratio does not depend on what is in the
-    picture, unlike raw edge energy. It is measured on the most detailed tiles
-    of a grid, so a sharp subject on a soft background still counts as sharp.
+    picture, unlike raw edge energy. `sharpness` uses the most detailed 15% of
+    a tile grid, so a sharp subject on a soft background still counts as sharp;
+    `broad` uses the most detailed 40%, for scenery that should be sharp
+    throughout.
     Contrast is normalised first so dark or flat photos are not mistaken for
     blurry ones.
     """
@@ -207,14 +223,22 @@ def measure_sharpness(gray: Image.Image) -> tuple[float, float]:
                 continue
             tiles.append((ImageStat.Stat(e1.crop(box)).var[0], ImageStat.Stat(e2.crop(box)).var[0]))
     if not tiles:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     tiles.sort(reverse=True)
-    top = tiles[: max(1, round(len(tiles) * 0.15))]
-    v1 = sum(a for a, _ in top)
-    v2 = sum(b for _, b in top)
-    if v1 <= 1e-6:
-        return 0.0, 0.0
-    return max(0.0, 1.0 - v2 / v1), v1 / len(top)
+
+    def ratio(share: float) -> tuple[float, float]:
+        top = tiles[: max(1, round(len(tiles) * share))]
+        v1 = sum(a for a, _ in top)
+        v2 = sum(b for _, b in top)
+        return (max(0.0, 1.0 - v2 / v1), v1 / len(top)) if v1 > 1e-6 else (0.0, 0.0)
+
+    sharp, detail = ratio(0.15)
+    # Broad focus: the median per-tile ratio over the most detailed 40% of tiles.
+    # Unweighted on purpose, so a few very sharp tiles cannot hide a soft frame.
+    wide = tiles[: max(1, round(len(tiles) * 0.40))]
+    per_tile = sorted(max(0.0, 1.0 - b / a) if a > 1e-6 else 0.0 for a, b in wide)
+    broad = per_tile[len(per_tile) // 2]
+    return sharp, broad, detail
 
 
 def measure_exposure(gray: Image.Image) -> dict:
@@ -260,14 +284,14 @@ def analyze(path: Path) -> PhotoMetrics:
         im = open_photo(path, kind)
         taken = _capture_time(im)
         gray = im.convert("L")
-        sharp, detail = measure_sharpness(gray)
+        sharp, broad, detail = measure_sharpness(gray)
         ex = measure_exposure(gray)
         return PhotoMetrics(
             path=str(path), name=path.name, kind=kind, size=size, mtime=mtime,
             width=im.size[0], height=im.size[1],
             taken_at=taken if taken is not None else mtime,
             time_source="exif" if taken is not None else "mtime",
-            sharpness=round(sharp, 3), detail=round(detail, 1),
+            sharpness=round(sharp, 3), sharpness_broad=round(broad, 3), detail=round(detail, 1),
             brightness=round(ex["brightness"], 1), shadows_clipped=round(ex["shadows_clipped"], 4),
             highlights_clipped=round(ex["highlights_clipped"], 4),
             dark_share=round(ex["dark_share"], 4), bright_share=round(ex["bright_share"], 4),
@@ -281,7 +305,7 @@ def _failed(path: Path, kind: str, size: int, mtime: float, error: str) -> Photo
     return PhotoMetrics(
         path=str(path), name=path.name, kind=kind, size=size, mtime=mtime,
         width=0, height=0, taken_at=mtime, time_source="mtime", sharpness=0.0,
-        detail=0.0, brightness=0.0, shadows_clipped=0.0, highlights_clipped=0.0,
+        sharpness_broad=0.0, detail=0.0, brightness=0.0, shadows_clipped=0.0, highlights_clipped=0.0,
         dark_share=0.0, bright_share=0.0, dhash="0" * 16, error=error,
     )
 

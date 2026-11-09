@@ -39,11 +39,13 @@ Hermes:  Noted. Pickwise will be more tolerant of soft shots like that one. Want
 | Focus and camera shake | A "re-blur" test on the most detailed parts of the photo: a sharp photo loses most of its fine detail when blurred a little more, a blurry one barely changes. Measuring the most detailed areas means a sharp subject on a soft background still counts as sharp. |
 | Exposure | Too dark, blown-out highlights, and low-key or silhouette shots, which are flagged as "maybe" instead of rejected. |
 | Bursts and near-duplicates | Capture time plus a perceptual hash. Only the best frame of each group is picked. |
+| Scene | `people` (default): one sharp area is enough, so a blurred background is fine. `scenery`: most of the frame must be sharp, so a landscape that is only sharp in one corner is flagged. |
 | Ranking | A 0-100 score from sharpness and exposure, used for "best N" and inside bursts. |
 
 Supported files: JPEG, HEIC/HEIF (iPhone), PNG, TIFF, WebP, and camera RAW (CR2, CR3, NEF,
-ARW, DNG, RAF, ORF, RW2 and more), read through the full-size JPEG preview that cameras
-embed in RAW files, so no RAW decoder is needed.
+ARW, DNG, RAF, ORF, RW2 and more, including iPhone DNG / ProRAW), read through the
+full-size colour preview that cameras and phones embed in RAW files, so no RAW decoder is
+needed. Grayscale depth maps and masks inside iPhone DNGs are skipped.
 
 Works best on original files from the camera or phone. Photos that went through a chat app
 or social network are still judged, but those apps strip capture times, so burst grouping
@@ -56,7 +58,8 @@ hermes plugins install ardianreffa/pickwise-photos --enable
 ```
 
 Pickwise uses Pillow and pillow-heif, which already ship with Hermes, so the install adds
-nothing heavy. Requires Hermes 0.23.0 or newer.
+nothing heavy. Requires Hermes 0.23.0 or newer. If Hermes itself runs the install for you
+(non-interactive), add `--yes-deps` so the dependency question is answered up front.
 
 ## Use
 
@@ -64,6 +67,7 @@ Just ask Hermes, for example:
 
 - "Pick the best photos from ~/Pictures/bali-trip"
 - "Cull ~/Desktop/wedding-raw, keep 50, motion blur is fine"
+- "Pick the sharpest landscapes from ~/Pictures/hike" (uses `scene: scenery`)
 - "Why did you reject IMG_2041?" / "Keep IMG_2041, I like it"
 - "Copy the picks into folders" / "Write ratings for Lightroom"
 
@@ -108,7 +112,10 @@ sidecars are never replaced.
 
 Pickwise judges focus, exposure and duplicates. It does not judge composition, emotion,
 smiles or closed eyes, and it does not recognise people; Hermes will say so if your brief
-asks for that. Very noisy night shots can look sharper than they are. RAW files are judged
+asks for that. Because it does not know where the person is, it cannot tell whether focus
+landed on the subject or on the background: a sharp tree behind a soft face still reads as
+"sharp". For a handful of photos you can ask Hermes to look at them with its own vision
+tool, which sends those images to your model provider, so it only happens when you ask. Very noisy night shots can look sharper than they are. RAW files are judged
 from their embedded preview, which reflects the camera's own processing.
 
 ## Development

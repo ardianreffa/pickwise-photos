@@ -151,3 +151,27 @@ def test_heic_is_read(tmp_path):
     scene(11).save(p)
     m = analysis.analyze(p)
     assert not m.error and m.kind == "heif"
+
+
+def test_iphone_dng_uses_colour_mpo_preview_not_masks(tmp_path):
+    """iPhone DNGs hold an MPO colour preview plus bigger-looking grayscale masks."""
+    preview = io.BytesIO()
+    scene(12).save(preview, "MPO", save_all=True, append_images=[scene(12).convert("L")])
+    mask = io.BytesIO()
+    Image.new("L", (1800, 1200), 230).filter(ImageFilter.GaussianBlur(3)).save(mask, "JPEG")
+    raw = tmp_path / "IMG_7316.DNG"
+    raw.write_bytes(b"MM\x00*" + b"\x00" * 64 + mask.getvalue() + b"\x00" * 64 + preview.getvalue())
+    m = analysis.analyze(raw)
+    assert not m.error and (m.width, m.height) == (900, 600)
+    assert m.sharpness > 0.7 and m.brightness < 200
+
+
+def test_scenery_needs_broad_focus(folder, tmp_path):
+    sharp_corner = scene(13).filter(ImageFilter.GaussianBlur(6))
+    sharp_corner.paste(scene(13).crop((0, 0, 220, 150)), (0, 0))
+    save(sharp_corner, tmp_path / "corner.jpg", datetime(2026, 11, 8, 9, 0, 0))
+    m = [analysis.analyze(tmp_path / "corner.jpg").to_dict()]
+    people = engine.decide(m, {"scene": "people"})[0]
+    scenery = engine.decide(m, {"scene": "scenery"})[0]
+    assert people["decision"] == "pick"
+    assert scenery["decision"] != "pick"
