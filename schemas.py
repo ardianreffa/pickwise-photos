@@ -20,7 +20,7 @@ REVIEW = {
         "type": "object",
         "properties": {
             "folder": {"type": "string",
-                       "description": "Folder with the photos. Absolute, ~/..., or relative to the session folder."},
+                       "description": "Folder with the photos. Absolute, ~/..., or relative to the session folder. Omit it to re-run the latest review with the same folder and brief (e.g. after pickwise_feedback); any other parameter you pass overrides that brief."},
             "count": {"type": "integer", "minimum": 1,
                       "description": "Keep only the N best as picks; other good photos become maybe."},
             "keep_dark": {"type": "boolean",
@@ -43,7 +43,6 @@ REVIEW = {
             "brief_note": {"type": "string",
                            "description": "The user's brief in their own words, stored with the review for reference."},
         },
-        "required": ["folder"],
     },
 }
 

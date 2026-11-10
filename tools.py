@@ -137,6 +137,16 @@ class Pickwise:
     # ── tools ───────────────────────────────────────────────────────────────
 
     def review(self, args: dict, **_: Any) -> str:
+        last = None
+        if not str(args.get("folder") or "").strip():
+            # "Review again": reuse the latest review's folder and brief, so a fresh
+            # session (or a review after feedback) does not need them repeated.
+            last = self._get_plan(None)
+            if last is None:
+                return _err("which folder? give the folder with the photos")
+            args = {**{k: v for k, v in last.get("brief", {}).items()
+                       if k != "scene" or v in ("people", "scenery")},
+                    **{k: v for k, v in args.items() if v is not None}, "folder": last["folder"]}
         try:
             folder = resolve_folder(args.get("folder", ""))
         except ValueError as exc:
@@ -315,7 +325,9 @@ class Pickwise:
             self._state_set("feedback", history[-200:])
             return _ok({"photo": d["name"], "was": d["decision"], "now": verdict,
                         "learned": change, "preferences": new_prefs,
-                        "tip": "Run pickwise_review again to see the effect on the whole folder."})
+                        "folder": plan["folder"], "brief": plan.get("brief", {}),
+                        "tip": "Call pickwise_review with no folder to re-run the latest review "
+                               "(same folder and brief) and show the effect."})
         except Exception as exc:
             return _err(f"feedback failed: {exc}")
 

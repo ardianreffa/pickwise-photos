@@ -221,3 +221,37 @@ def test_keep_override_survives_count(folder):
     d = by_name(engine.decide(m, {"count": 1}, {}, {blurry: "keep"}))
     assert d["blurry.jpg"]["decision"] == "pick"
     assert sum(x["decision"] == "pick" for x in d.values()) == 1
+
+
+def test_review_again_without_folder(folder, tmp_path, monkeypatch):
+    import importlib, json as _json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    tools = importlib.import_module("pickwise_photos.tools")
+
+    class State(dict):
+        def get(self, k, default=None):
+            return _json.loads(_json.dumps(super().get(k, default)))
+        def set(self, k, v):
+            self[k] = _json.loads(_json.dumps(v))
+
+    class Ctx:
+        state = State()
+
+    pw = tools.Pickwise(Ctx())
+    pw._conn = lambda: _MemDB.get()
+    first = _json.loads(pw.review({"folder": str(folder), "count": 2}))
+    again = _json.loads(pw.review({}))
+    assert again["folder"] == first["folder"] and again["brief_applied"]["count"] == 2
+    assert again["totals"]["pick"] == 2
+
+
+class _MemDB:
+    _db = None
+
+    @classmethod
+    def get(cls):
+        import sqlite3
+        if cls._db is None:
+            cls._db = sqlite3.connect(":memory:", check_same_thread=False)
+            cls._db.execute("CREATE TABLE metrics (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, data TEXT)")
+        return cls._db

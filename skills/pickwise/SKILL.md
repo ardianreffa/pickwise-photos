@@ -27,7 +27,8 @@ description: How to cull a folder of photos with Pickwise Photos, from brief to 
    Offer `pickwise_feedback` with `verdict: reject` for photos the user wants to drop; the
    next best frame of the same burst then takes its place on the next review.
 4. **Corrections.** If the user disagrees with a decision, call `pickwise_feedback` for that
-   photo, tell them what Pickwise learned, and offer to review again.
+   photo, tell them what Pickwise learned, and offer to review again: `pickwise_review`
+   with no folder re-runs the latest review with the same folder and brief.
 5. **Apply only with consent.** Call `pickwise_apply` without `confirm` first (dry run), show
    what will happen, and call it with `confirm: true` only after the user says yes. Prefer
    `copy` unless they ask to move. Offer `xmp` to Lightroom Classic or darktable users.

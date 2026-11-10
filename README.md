@@ -106,6 +106,14 @@ looks at each preview with its own vision tool, and tells you which ones to drop
 makes the previews; viewing them sends those images to your model provider, so it happens only
 when you ask. Rejecting a burst frame lets the next best frame of that burst take its place.
 
+Tip: image analysis uses your main model by default. A large model can be slow or hit rate
+limits on images; a fast vision model works well for this check, for example:
+
+```bash
+hermes config set auxiliary.vision.provider nous
+hermes config set auxiliary.vision.model google/gemini-3.7-flash
+```
+
 ## Privacy, safety and disclosure
 
 - **Reads:** only the folder you name (and its subfolders if you ask), and only image files.
