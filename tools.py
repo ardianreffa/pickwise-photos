@@ -26,12 +26,16 @@ PLUGIN = "pickwise-photos"
 OUT_DIR = "Pickwise"
 BUCKETS = {"pick": "Picks", "maybe": "Maybe", "reject": "Rejects"}
 XMP_RATING = {"pick": ("5", "Green"), "maybe": ("3", "Yellow"), "reject": ("-1", "Red")}
-MAX_PHOTOS_DEFAULT = 2000
+MAX_PHOTOS_DEFAULT = 10000
+TIME_BUDGET = 240.0      # seconds of analysis per call; Hermes stops a tool after 420 s
+CHUNK = 48               # photos analysed (and saved) per step
 PREVIEW_EDGE = 1568      # long edge of preview JPEGs: what vision models actually look at
 PREVIEW_LIMIT = 40
 KEEP_PREVIEW_SETS = 3
 LIST_LIMIT = 40
 KEEP_PLANS = 10
+KEEP_REPORTS = 20
+SPACE_MARGIN = 1024 ** 3  # keep at least 1 GB free after copying
 
 
 def _ok(payload: dict) -> str:
@@ -49,6 +53,46 @@ def _session_dir() -> Path:
         return Path(resolve_agent_cwd())
     except Exception:
         return Path.home()
+
+
+def _int(value: Any, default: Optional[int], low: int, high: int) -> Optional[int]:
+    """Lenient int parsing for model-supplied arguments: bad values fall back to default."""
+    try:
+        if value is None or value == "":
+            return default
+        return max(low, min(high, int(float(value))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _workers() -> int:
+    """Photos decoded in parallel, sized to the machine: a 48 MP HEIC needs a few hundred
+    MB while it is open, so an 8 GB laptop gets 2 workers and a 24 GB one up to 8."""
+    cpus = os.cpu_count() or 4
+    try:
+        ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2 ** 30
+    except (ValueError, OSError, AttributeError):
+        ram_gb = 8.0
+    return max(2, min(8, cpus, int(ram_gb // 3)))
+
+
+def _stat_map(paths) -> dict:
+    out = {}
+    for p in paths:
+        try:
+            st = os.stat(p)
+            out[str(p)] = [st.st_size, st.st_mtime]
+        except OSError:
+            pass
+    return out
+
+
+def _human(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 
 def resolve_folder(raw: str) -> Path:
@@ -104,7 +148,13 @@ class Pickwise:
 
     # ── analysis with cache ─────────────────────────────────────────────────
 
-    def _metrics_for(self, paths: list[Path]) -> list[dict]:
+    def _metrics_for(self, paths: list[Path], budget: Optional[float] = None) -> tuple[list[dict], int]:
+        """Measure photos, using the cache. Returns (metrics, number still to analyse).
+
+        Work is saved after every chunk and stops once the time budget is spent, so a
+        folder of thousands of photos finishes over a few calls instead of hitting
+        Hermes' per-tool deadline and losing everything.
+        """
         conn = self._conn()
         cached: dict[str, dict] = {}
         todo: list[Path] = []
@@ -121,24 +171,32 @@ class Pickwise:
                 cached[str(p)] = data
             else:
                 todo.append(p)
+        started = time.time()
+        remaining = len(todo)
         if todo:
-            workers = max(2, min(8, (os.cpu_count() or 4)))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                fresh = list(pool.map(analysis.analyze, todo))
-            for m in fresh:
-                d = {**m.to_dict(), "v": analysis.ANALYSIS_VERSION}
-                cached[m.path] = d
-                if not m.error:
-                    conn.execute("INSERT OR REPLACE INTO metrics(path, size, mtime, data) VALUES (?,?,?,?)",
-                                 (m.path, m.size, m.mtime, json.dumps(d)))
-            conn.commit()
-        return [cached[str(p)] for p in paths if str(p) in cached]
+            with ThreadPoolExecutor(max_workers=_workers()) as pool:
+                for i in range(0, len(todo), CHUNK):
+                    chunk = todo[i:i + CHUNK]
+                    for m in pool.map(analysis.analyze, chunk):
+                        d = {**m.to_dict(), "v": analysis.ANALYSIS_VERSION}
+                        cached[m.path] = d
+                        if not m.error:
+                            conn.execute("INSERT OR REPLACE INTO metrics(path, size, mtime, data) "
+                                         "VALUES (?,?,?,?)", (m.path, m.size, m.mtime, json.dumps(d)))
+                    conn.commit()
+                    remaining -= len(chunk)
+                    if budget is not None and remaining and time.time() - started > budget:
+                        break
+        return [cached[str(p)] for p in paths if str(p) in cached], remaining
 
     # ── tools ───────────────────────────────────────────────────────────────
 
     def review(self, args: dict, **_: Any) -> str:
         last = None
         if not str(args.get("folder") or "").strip():
+            pending = self._state_get("pending_review", None)
+            if pending:  # continue an unfinished review of a large folder
+                return self.review({**pending, **{k: v for k, v in args.items() if v is not None}})
             # "Review again": reuse the latest review's folder and brief, so a fresh
             # session (or a review after feedback) does not need them repeated.
             last = self._get_plan(None)
@@ -152,22 +210,37 @@ class Pickwise:
         except ValueError as exc:
             return _err(str(exc))
         try:
-            limit = int(args.get("max_photos") or MAX_PHOTOS_DEFAULT)
+            limit = _int(args.get("max_photos"), MAX_PHOTOS_DEFAULT, 1, 10000)
             paths, skipped = analysis.list_photos(folder, bool(args.get("recursive")), limit)
             if not paths:
                 return _err("no supported photos in this folder",
                             folder=str(folder), supported=sorted(analysis.SUPPORTED_EXT))
             started = time.time()
-            metrics = self._metrics_for(paths)
+            all_files = paths
+            paths, companions = analysis.pair_files(paths)
+            metrics, remaining = self._metrics_for(paths, TIME_BUDGET)
+            if remaining:
+                self._state_set("pending_review", {k: v for k, v in args.items() if k != "plan_id"}
+                                | {"folder": str(folder)})
+                return _ok({
+                    "in_progress": True, "folder": str(folder), "photos": len(paths),
+                    "analysed": len(paths) - remaining, "remaining": remaining,
+                    "seconds": round(time.time() - started, 1),
+                    "next_step": ("Large folder: analysis is saved as it goes. Tell the user how far "
+                                  "it got, then call pickwise_review again (same arguments, or no "
+                                  "folder) to continue from where it stopped. Nothing was written."),
+                })
+            self._state_set("pending_review", None)
             brief = {
-                "count": args.get("count") or None,
+                "count": _int(args.get("count"), None, 1, 100000),
                 "keep_dark": bool(args.get("keep_dark")),
                 "keep_bright": bool(args.get("keep_bright")),
                 "allow_soft": bool(args.get("allow_soft")),
                 "dedupe": args.get("dedupe", True) is not False,
-                "per_burst": max(1, min(20, int(args.get("per_burst") or 1))),
+                "per_burst": _int(args.get("per_burst"), 1, 1, 20),
                 "strictness": args.get("strictness") or "normal",
                 "scene": args.get("scene") if args.get("scene") in ("people", "scenery") else "auto",
+                "look": args.get("look") if args.get("look") in ("low_key", "high_key") else None,
             }
             prefs = self._state_get("prefs", dict(engine.DEFAULT_PREFS))
             overrides = self._state_get("overrides", {})
@@ -176,9 +249,11 @@ class Pickwise:
             plan = {
                 "id": plan_id, "folder": str(folder), "created": time.time(), "brief": brief,
                 "brief_note": str(args.get("brief_note") or "")[:500],
-                "decisions": [{k: d[k] for k in ("name", "path", "decision", "reasons", "score", "group")}
+                "decisions": [{**{k: d[k] for k in ("name", "path", "decision", "reasons", "score", "group")},
+                               **({"companions": companions[d["path"]]} if d["path"] in companions else {})}
                               for d in decisions],
-                "files": {m["path"]: [m["size"], m["mtime"]] for m in metrics},
+                "files": {**{m["path"]: [m["size"], m["mtime"]] for m in metrics},
+                          **_stat_map(c for cs in companions.values() for c in cs)},
                 "applied": None,
             }
             self._save_plan(plan)
@@ -201,6 +276,13 @@ class Pickwise:
             counts = {k: 0 for k in BUCKETS}
             for d in plan["decisions"]:
                 counts[d["decision"]] += 1
+            needed = sum(v[0] for v in plan["files"].values()) if mode == "copy" else 0
+            try:
+                free = shutil.disk_usage(folder).free
+            except OSError:
+                free = None
+            fits = free is None or needed + SPACE_MARGIN <= free
+            space = {"copy_needs": _human(needed), "free_space": _human(free) if free is not None else "unknown"}
             if not args.get("confirm"):
                 where = (f"subfolders Picks/Maybe/Rejects inside {out}" if mode != "xmp"
                          else "a .xmp rating sidecar next to each photo (existing sidecars are left alone)")
@@ -209,44 +291,22 @@ class Pickwise:
                     "would_write": where,
                     "originals": ("moved (undo with pickwise_undo)" if mode == "move"
                                   else "left untouched"),
+                    **({"disk": space} if mode == "copy" else {}),
+                    **({} if fits else {"warning": "Not enough free disk space for copies. Suggest "
+                                                   "'move' (no extra space, undoable) or 'xmp'."}),
                     "next_step": "Show this to the user. Only call again with confirm=true after "
                                  "they explicitly agree.",
                 })
+            if not fits:
+                return _err("not enough free disk space to copy these photos",
+                            disk=space, suggestion="use mode 'move' (undoable) or 'xmp' instead")
             if plan.get("applied"):
                 return _err(f"this review was already applied ({plan['applied']['mode']}); "
                             "run a new review to apply again")
             done, skipped = [], []
             for d in plan["decisions"]:
-                src = Path(d["path"])
-                size_mtime = plan["files"].get(d["path"])
-                try:
-                    st = src.stat()
-                except OSError:
-                    skipped.append({"name": d["name"], "why": "file no longer exists"})
-                    continue
-                if size_mtime and (st.st_size != size_mtime[0] or abs(st.st_mtime - size_mtime[1]) > 1e-6):
-                    skipped.append({"name": d["name"], "why": "file changed since the review"})
-                    continue
-                if mode == "xmp":
-                    side = src.with_suffix(".xmp") if analysis.kind_of(src) == "raw" else src.with_name(src.name + ".xmp")
-                    if side.exists():
-                        skipped.append({"name": d["name"], "why": f"{side.name} already exists"})
-                        continue
-                    rating, label = XMP_RATING[d["decision"]]
-                    side.write_text(_xmp(rating, label), encoding="utf-8")
-                    done.append({"from": str(src), "to": str(side)})
-                    continue
-                dest_dir = out / BUCKETS[d["decision"]]
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / src.name
-                if dest.exists():
-                    skipped.append({"name": d["name"], "why": f"{dest} already exists"})
-                    continue
-                if mode == "move":
-                    shutil.move(str(src), str(dest))
-                else:
-                    shutil.copy2(str(src), str(dest))
-                done.append({"from": str(src), "to": str(dest)})
+                for path in [d["path"]] + d.get("companions", []):
+                    self._apply_one(Path(path), d["decision"], plan, mode, out, done, skipped)
             plan["applied"] = {"mode": mode, "at": time.time(), "done": done}
             self._save_plan(plan)
             return _ok({
@@ -257,6 +317,45 @@ class Pickwise:
             })
         except Exception as exc:
             return _err(f"apply failed: {exc}")
+
+    def _apply_one(self, src: Path, decision: str, plan: dict, mode: str, out: Path,
+                   done: list, skipped: list) -> None:
+        """Copy, move or rate one file. Errors are recorded, never raised: a failure on
+        one file must not lose track of files already moved (undo depends on it)."""
+        size_mtime = plan["files"].get(str(src))
+        try:
+            st = src.stat()
+        except OSError:
+            skipped.append({"name": src.name, "why": "file no longer exists"})
+            return
+        if size_mtime and (st.st_size != size_mtime[0] or abs(st.st_mtime - size_mtime[1]) > 1e-6):
+            skipped.append({"name": src.name, "why": "file changed since the review"})
+            return
+        try:
+            if mode == "xmp":
+                side = (src.with_suffix(".xmp") if analysis.kind_of(src) == "raw"
+                        else src.with_name(src.name + ".xmp"))
+                if side.exists():
+                    skipped.append({"name": src.name, "why": f"{side.name} already exists"})
+                    return
+                rating, label = XMP_RATING[decision]
+                with open(side, "x", encoding="utf-8") as fh:  # "x": never overwrite
+                    fh.write(_xmp(rating, label))
+                done.append({"from": str(src), "to": str(side)})
+                return
+            dest_dir = out / BUCKETS[decision]
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / src.name
+            if dest.exists():
+                skipped.append({"name": src.name, "why": f"{dest} already exists"})
+                return
+            if mode == "move":
+                shutil.move(str(src), str(dest))
+            else:
+                shutil.copy2(str(src), str(dest))
+            done.append({"from": str(src), "to": str(dest)})
+        except OSError as exc:
+            skipped.append({"name": src.name, "why": f"could not {mode}: {exc.strerror or exc}"})
 
     def undo(self, args: dict, **_: Any) -> str:
         try:
@@ -302,10 +401,14 @@ class Pickwise:
             wanted = str(args.get("photo") or "").strip()
             if not wanted:
                 return _err("which photo? give its file name")
+            def names(d):
+                return [d["name"].lower()] + [Path(c).name.lower() for c in d.get("companions", [])]
+
             matches = [d for d in plan["decisions"]
-                       if d["name"].lower() == wanted.lower() or d["path"] == wanted]
+                       if wanted.lower() in names(d) or d["path"] == wanted]
             if not matches:
-                matches = [d for d in plan["decisions"] if wanted.lower() in d["name"].lower()]
+                matches = [d for d in plan["decisions"]
+                           if any(wanted.lower() in n for n in names(d))]
             if len(matches) != 1:
                 return _err("photo not found in the last review" if not matches
                             else "more than one photo matches; use the full file name",
@@ -371,7 +474,7 @@ class Pickwise:
                     return _err("which must be picks, maybe or rejects")
                 rows = sorted((d for d in decisions if d["decision"] == bucket), key=lambda d: -d["score"])
                 missing = []
-            limit = max(1, min(PREVIEW_LIMIT, int(args.get("limit") or 6)))
+            limit = _int(args.get("limit"), 6, 1, PREVIEW_LIMIT)
             total = len(rows)
             rows = rows[:limit]
             if not rows:
@@ -404,15 +507,17 @@ class Pickwise:
                 "plan_id": plan["id"], "previews": previews, "shown": len(rows), "available": total,
                 "not_found": missing,
                 "how_to_check": (
-                    "Pickwise cannot see eyes, expressions or whether the subject itself is sharp. "
-                    "If the user asked for a visual check, look at the previews with your vision tool "
-                    "ONE AT A TIME, not in parallel (vision providers rate-limit bursts), and ask: "
-                    "is there a person, are their eyes closed or half closed, is the person or main "
-                    "subject blurred by motion or missed focus, is anything else clearly wrong? "
-                    "Then report per photo and offer pickwise_feedback (verdict reject) for the ones "
-                    "the user agrees to drop."),
+                    "Pickwise cannot see eyes, expressions, composition or whether the subject itself "
+                    "is sharp. Look at the previews with your vision tool ONE AT A TIME, not in "
+                    "parallel (vision providers rate-limit bursts). Check what the user asked for; by "
+                    "default: is there a person or clear subject, are eyes closed or half closed, is the "
+                    "subject blurred by motion or missed focus, and is there a clear composition "
+                    "mistake (tilted horizon, head or limbs cut off, something blocking the subject)? "
+                    "Report mistakes, not taste. Then report per photo and offer pickwise_feedback "
+                    "(verdict reject) for the ones the user agrees to drop."),
                 "privacy": ("These files are local previews. Looking at them with a vision tool sends "
-                            "them to the model provider, so only do it when the user asked for it."),
+                            "them to the model provider: only do it because the user's current message "
+                            "asked for a visual check. Do not repeat the check later unasked."),
             })
         except Exception as exc:
             return _err(f"preview failed: {exc}")
@@ -453,19 +558,33 @@ class Pickwise:
         except Exception:
             return {}
 
+    def _plans_table(self):
+        conn = self._conn()
+        conn.execute("CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, created REAL, data TEXT)")
+        return conn
+
     def _save_plan(self, plan: dict) -> None:
-        plans = self._state_get("plans", {})
-        plans[plan["id"]] = plan
-        if len(plans) > KEEP_PLANS:
-            for old in sorted(plans, key=lambda k: plans[k]["created"])[:-KEEP_PLANS]:
-                plans.pop(old)
-        self._state_set("plans", plans)
+        """Reviews live in Pickwise's own SQLite file, not in ctx.state: a review of
+        thousands of photos would otherwise eat into Hermes' 10 MiB state budget."""
+        conn = self._plans_table()
+        conn.execute("INSERT OR REPLACE INTO plans(id, created, data) VALUES (?,?,?)",
+                     (plan["id"], plan["created"], json.dumps(plan)))
+        conn.execute("DELETE FROM plans WHERE id NOT IN "
+                     "(SELECT id FROM plans ORDER BY created DESC LIMIT ?)", (KEEP_PLANS,))
+        conn.commit()
         self._state_set("last_plan", plan["id"])
+        if self._state_get("plans", None):  # migrate away from the 0.1.x state layout
+            self._state_set("plans", {})
 
     def _get_plan(self, plan_id: Optional[str]) -> Optional[dict]:
-        plans = self._state_get("plans", {})
         pid = plan_id or self._state_get("last_plan", None)
-        return plans.get(pid) if pid else None
+        if not pid:
+            return None
+        row = self._plans_table().execute("SELECT data FROM plans WHERE id = ?", (pid,)).fetchone()
+        if row:
+            return json.loads(row[0])
+        legacy = self._state_get("plans", {})  # reviews saved by older versions
+        return legacy.get(pid) if isinstance(legacy, dict) else None
 
     def _write_report(self, plan: dict, metrics: list[dict]) -> str:
         by_path = {m["path"]: m for m in metrics}
@@ -473,15 +592,22 @@ class Pickwise:
                  f"Review {plan['id']}, brief: {json.dumps(plan['brief'])}", ""]
         for label, key in (("Picks", "pick"), ("Maybe", "maybe"), ("Rejects", "reject")):
             rows = [d for d in plan["decisions"] if d["decision"] == key]
-            lines += [f"## {label} ({len(rows)})", "", "| Photo | Score | Why | Sharpness | Brightness |",
-                      "|---|---|---|---|---|"]
+            lines += [f"## {label} ({len(rows)})", "",
+                      "| Photo | Score | Why | Sharpness | Brightness | Analysed size |",
+                      "|---|---|---|---|---|---|"]
             for d in rows:
                 m = by_path.get(d["path"], {})
-                lines.append(f"| {d['name']} | {d['score']} | {'; '.join(d['reasons'])} | "
-                             f"{m.get('sharpness', '')} | {m.get('brightness', '')} |")
+                name = d["name"] + "".join(f" + {Path(c).name}" for c in d.get("companions", []))
+                lines.append(f"| {name} | {d['score']} | {'; '.join(d['reasons'])} | "
+                             f"{m.get('sharpness', '')} | {m.get('brightness', '')} | "
+                             f"{m.get('width', '')}x{m.get('height', '')} |")
             lines.append("")
-        path = self._reports_dir() / f"{plan['id']}.md"
+        reports = self._reports_dir()
+        path = reports / f"{plan['id']}.md"
         path.write_text("\n".join(lines), encoding="utf-8")
+        old_reports = sorted(reports.glob("*.md"), key=lambda p: p.stat().st_mtime)
+        for stale in old_reports[:-KEEP_REPORTS]:
+            stale.unlink(missing_ok=True)
         return str(path)
 
     def _summary(self, plan, decisions, metrics, prefs, overrides, skipped, seconds, report) -> dict:
@@ -494,14 +620,22 @@ class Pickwise:
             groups.setdefault(d["group"], []).append(d)
         bursts = [g for g in groups.values() if len(g) > 1]
 
+        paired = {d["path"]: [Path(c).name for c in d["companions"]]
+                  for d in plan["decisions"] if d.get("companions")}
+
         def short(rows, n=LIST_LIMIT):
-            return [{"name": r["name"], "score": r["score"], "reasons": r["reasons"]} for r in rows[:n]]
+            return [{"name": r["name"], "score": r["score"], "reasons": r["reasons"],
+                     **({"paired_with": paired[r["path"]]} if r["path"] in paired else {})}
+                    for r in rows[:n]]
 
         picks = sorted((d for d in decisions if d["decision"] == "pick"), key=lambda r: -r["score"])
         return {
             "plan_id": plan["id"], "folder": plan["folder"], "photos": len(metrics),
             "file_types": kinds, "seconds": seconds, "totals": totals,
             "burst_groups": len(bursts), "brief_applied": plan["brief"],
+            **({"raw_jpeg_pairs": len(paired),
+                "pairs_note": "RAW+JPEG pairs count as one photo: judged on the JPEG, and both "
+                              "files always go to the same pile."} if paired else {}),
             "learned_preferences": _explain_prefs(prefs),
             "photo_overrides_applied": sum(1 for p in overrides if p in plan["files"]),
             "picks": short(picks), "maybe": short([d for d in decisions if d["decision"] == "maybe"]),

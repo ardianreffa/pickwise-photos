@@ -255,3 +255,177 @@ class _MemDB:
             cls._db = sqlite3.connect(":memory:", check_same_thread=False)
             cls._db.execute("CREATE TABLE metrics (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, data TEXT)")
         return cls._db
+
+
+def test_apply_survives_a_failing_file(folder, tmp_path, monkeypatch):
+    """One photo failing to move must not lose the record of the others (undo needs it)."""
+    import importlib, json as _json, shutil as _sh
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    tools = importlib.import_module("pickwise_photos.tools")
+
+    class State(dict):
+        def get(self, k, default=None):
+            return _json.loads(_json.dumps(super().get(k, default)))
+        def set(self, k, v):
+            self[k] = _json.loads(_json.dumps(v))
+
+    class Ctx:
+        state = State()
+
+    pw = tools.Pickwise(Ctx())
+    pw._conn = lambda: _MemDB.get()
+    _json.loads(pw.review({"folder": str(folder)}))
+    real_move = _sh.move
+
+    def flaky(src, dst):
+        if "sharp_b" in str(src):
+            raise PermissionError(13, "Permission denied")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(tools.shutil, "move", flaky)
+    res = _json.loads(pw.apply({"mode": "move", "confirm": True}))
+    assert res["applied"] and any("Permission denied" in s["why"] for s in res["skipped"])
+    monkeypatch.setattr(tools.shutil, "move", real_move)
+    undo = _json.loads(pw.undo({}))
+    assert undo["restored"] == res["written"] and not undo["problems"]
+    assert (folder / "sharp_a.jpg").exists() and (folder / "sharp_b.jpg").exists()
+
+
+def test_bad_numbers_are_ignored(folder, tmp_path, monkeypatch):
+    import importlib, json as _json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home2"))
+    tools = importlib.import_module("pickwise_photos.tools")
+    assert tools._int("abc", 1, 1, 20) == 1 and tools._int("3", 1, 1, 20) == 3
+    assert tools._int(None, None, 1, 10) is None and tools._int(99, 1, 1, 20) == 20
+
+
+def test_low_key_look_ranks_dark_photos_first(folder):
+    """A moody low-key frame (dark but detailed) wins only when the user asks for that look."""
+    t = datetime(2026, 11, 8, 18, 0, 0)
+    save(ImageEnhance.Brightness(scene(30)).enhance(0.5), folder / "moody.jpg", t)
+    m = metrics(folder)
+    plain = by_name(engine.decide(m, {"count": 1}))
+    moody = by_name(engine.decide(m, {"count": 1, "look": "low_key"}))
+    assert plain["moody.jpg"]["decision"] != "pick"
+    assert moody["moody.jpg"]["decision"] == "pick"
+    assert "low-key" in moody["moody.jpg"]["reasons"][0]
+    assert moody["dark.jpg"]["decision"] != "reject"  # near-black is tolerated, not favoured
+
+
+def test_reviews_live_in_sqlite_not_state(folder, tmp_path, monkeypatch):
+    import importlib, json as _json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home3"))
+    tools = importlib.import_module("pickwise_photos.tools")
+
+    class State(dict):
+        def get(self, k, default=None):
+            return _json.loads(_json.dumps(super().get(k, default)))
+        def set(self, k, v):
+            self[k] = _json.loads(_json.dumps(v))
+
+    class Ctx:
+        state = State({"plans": {"old1": {"id": "old1", "created": 1, "folder": str(folder),
+                                           "brief": {}, "decisions": [], "files": {}}},
+                       "last_plan": "old1"})
+
+    pw = tools.Pickwise(Ctx())
+    pw._conn = lambda: _MemDB.get()
+    assert pw._get_plan(None)["id"] == "old1"          # reads a review saved by 0.1.x
+    first = _json.loads(pw.review({"folder": str(folder)}))
+    assert pw._get_plan(first["plan_id"])["folder"] == str(folder)
+    assert not Ctx.state.get("plans")                   # migrated away, state stays small
+
+
+def test_large_folder_resumes_across_calls(folder, tmp_path, monkeypatch):
+    """With a tiny time budget the review stops early, keeps its work and resumes."""
+    import importlib, json as _json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home4"))
+    tools = importlib.import_module("pickwise_photos.tools")
+    monkeypatch.setattr(tools, "TIME_BUDGET", 0.0)
+    monkeypatch.setattr(tools, "CHUNK", 2)
+
+    class State(dict):
+        def get(self, k, default=None):
+            return _json.loads(_json.dumps(super().get(k, default)))
+        def set(self, k, v):
+            self[k] = _json.loads(_json.dumps(v))
+
+    class Ctx:
+        state = State()
+
+    _MemDB._db = None
+    pw = tools.Pickwise(Ctx())
+    pw._conn = lambda: _MemDB.get()
+    r = _json.loads(pw.review({"folder": str(folder), "count": 2}))
+    calls = 1
+    while r.get("in_progress"):
+        assert r["analysed"] < r["photos"]
+        r = _json.loads(pw.review({}))  # continue without repeating the folder
+        calls += 1
+    assert calls > 2 and r["totals"]["pick"] == 2 and r["brief_applied"]["count"] == 2
+
+
+def test_copy_is_refused_when_disk_is_too_full(folder, tmp_path, monkeypatch):
+    import importlib, json as _json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home5"))
+    tools = importlib.import_module("pickwise_photos.tools")
+
+    class State(dict):
+        def get(self, k, default=None):
+            return _json.loads(_json.dumps(super().get(k, default)))
+        def set(self, k, v):
+            self[k] = _json.loads(_json.dumps(v))
+
+    class Ctx:
+        state = State()
+
+    _MemDB._db = None
+    pw = tools.Pickwise(Ctx())
+    pw._conn = lambda: _MemDB.get()
+    pw.review({"folder": str(folder)})
+    assert "copy_needs" in _json.loads(pw.apply({"mode": "copy"}))["disk"]
+    monkeypatch.setattr(tools, "SPACE_MARGIN", 10 ** 18)
+    assert "warning" in _json.loads(pw.apply({"mode": "copy"}))
+    refused = _json.loads(pw.apply({"mode": "copy", "confirm": True}))
+    assert "not enough free disk space" in refused["error"]
+    assert not (folder / "Pickwise").exists()
+
+
+def test_raw_jpeg_pairs_travel_together(tmp_path, monkeypatch):
+    """Sony-style RAW+JPEG: one photo, judged on the JPEG, both files in the same pile."""
+    import importlib, json as _json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home6"))
+    tools = importlib.import_module("pickwise_photos.tools")
+    shoot = tmp_path / "shoot"
+    shoot.mkdir()
+    t0 = datetime(2026, 11, 8, 7, 0, 0)
+    for i, im in enumerate([scene(40), scene(41).filter(ImageFilter.GaussianBlur(6))]):
+        save(im, shoot / f"DSC0000{i}.JPG", t0 + timedelta(minutes=i))
+        preview = io.BytesIO()
+        im.resize((450, 300)).save(preview, "JPEG")
+        (shoot / f"DSC0000{i}.ARW").write_bytes(b"II*\x00" + b"\x00" * 64 + preview.getvalue())
+
+    class State(dict):
+        def get(self, k, default=None):
+            return _json.loads(_json.dumps(super().get(k, default)))
+        def set(self, k, v):
+            self[k] = _json.loads(_json.dumps(v))
+
+    class Ctx:
+        state = State()
+
+    _MemDB._db = None
+    pw = tools.Pickwise(Ctx())
+    pw._conn = lambda: _MemDB.get()
+    r = _json.loads(pw.review({"folder": str(shoot)}))
+    assert r["photos"] == 2 and r["raw_jpeg_pairs"] == 2
+    assert r["picks"][0]["name"] == "DSC00000.JPG" and r["picks"][0]["paired_with"] == ["DSC00000.ARW"]
+    fb = _json.loads(pw.feedback({"photo": "DSC00001.ARW", "verdict": "keep"}))  # RAW name works too
+    assert fb["photo"] == "DSC00001.JPG"
+    pw.review({})
+    moved = _json.loads(pw.apply({"mode": "move", "confirm": True}))
+    assert moved["written"] == 4
+    picks = shoot / "Pickwise" / "Picks"
+    assert {p.name for p in picks.iterdir()} == {"DSC00000.JPG", "DSC00000.ARW", "DSC00001.JPG", "DSC00001.ARW"}
+    undo = _json.loads(pw.undo({}))
+    assert undo["restored"] == 4 and (shoot / "DSC00001.ARW").exists()

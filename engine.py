@@ -64,8 +64,9 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
 
     mean, clipped = m["brightness"], m["highlights_clipped"]
     dark_share, bright_share = m.get("dark_share", 0.0), m.get("bright_share", 0.0)
-    dark_ok = brief.get("keep_dark") or prefs.get("dark_ok", 0) >= 2
-    bright_ok = brief.get("keep_bright") or prefs.get("bright_ok", 0) >= 2
+    look = brief.get("look") or ""
+    dark_ok = brief.get("keep_dark") or look == "low_key" or prefs.get("dark_ok", 0) >= 2
+    bright_ok = brief.get("keep_bright") or look == "high_key" or prefs.get("bright_ok", 0) >= 2
     if mean < LOWKEY_MEAN and dark_share > LOWKEY_DARK and bright_share >= SILHOUETTE_BRIGHT:
         if dark_ok:
             notes.append("low-key or silhouette, allowed by your brief")
@@ -88,17 +89,30 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
     return reject, maybe, notes
 
 
-def quality_score(m: dict, scene: str = "") -> float:
-    """0..100. Sharpness dominates; exposure problems subtract."""
+LOOK_TARGET = {"low_key": 60.0, "high_key": 185.0}  # mean brightness each look aims for
+
+
+def quality_score(m: dict, scene: str = "", look: str = "") -> float:
+    """0..100. Sharpness dominates; exposure problems subtract.
+
+    With a look preference ("low_key" or "high_key") exposure is scored against that
+    look instead of a neutral mid-tone: deep shadows (or bright highlights) stop
+    counting against the photo and photos closer to the look rank higher.
+    """
     if m.get("error"):
         return 0.0
     s = m.get("sharpness_broad", m["sharpness"]) if scene == "scenery" else m["sharpness"]
     sharp = 55.0 * min(1.0, s / 0.85)
     sharp += 5.0 * min(1.0, math.log1p(m.get("detail", 0.0)) / math.log1p(3000.0))
     mean = m["brightness"]
-    exposure = 40.0 - min(40.0, abs(mean - 120.0) / 3.0)
-    exposure -= 40.0 * min(1.0, m["shadows_clipped"]) * 0.5
-    exposure -= 40.0 * min(1.0, m["highlights_clipped"]) * 0.8
+    target = LOOK_TARGET.get(look, 120.0)
+    exposure = 40.0 - min(40.0, abs(mean - target) / 3.0)
+    if look != "low_key":
+        exposure -= 40.0 * min(1.0, m["shadows_clipped"]) * 0.5
+    if look != "high_key":
+        exposure -= 40.0 * min(1.0, m["highlights_clipped"]) * 0.8
+    else:
+        exposure -= 40.0 * max(0.0, m["highlights_clipped"] - 0.35)  # only near-white frames
     return round(max(0.0, sharp + max(0.0, exposure)), 1)
 
 
@@ -122,6 +136,15 @@ def group_bursts(metrics: list[dict]) -> list[list[dict]]:
         if not placed:
             groups.append([m])
     return groups
+
+
+def _pick_reason(r: dict, brief: dict) -> str:
+    look = brief.get("look") or ""
+    if look == "low_key" and r["brightness"] < 90:
+        return "sharp, with the low-key look you asked for"
+    if look == "high_key" and r["brightness"] > 160:
+        return "sharp, with the bright high-key look you asked for"
+    return "sharp and well exposed"
 
 
 def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[dict] = None,
@@ -148,7 +171,7 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
                 reject, maybe, notes = [], [], []
             rows[m["path"]] = {
                 "name": m["name"], "path": m["path"], "kind": m["kind"],
-                "group": gi, "group_size": len(group), "score": quality_score(m, brief.get("scene", "")),
+                "group": gi, "group_size": len(group), "score": quality_score(m, brief.get("scene", ""), brief.get("look") or ""),
                 "reject": reject, "maybe": maybe, "notes": notes,
                 "sharpness": m["sharpness"], "brightness": m["brightness"],
                 "forced": verdict,
@@ -162,8 +185,10 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
                 if r["forced"] == "keep":
                     continue
                 r["maybe"].append(
-                    f"near-duplicate of {best['name']}, which scored higher "
-                    f"({best['score']} vs {r['score']})" if per_burst == 1 else
+                    (f"near-duplicate of {best['name']}, which scored higher "
+                     f"({best['score']} vs {r['score']})" if best["score"] > r["score"] else
+                     f"near-duplicate of {best['name']} (same score, {r['score']}); keeping one")
+                    if per_burst == 1 else
                     f"similar burst frame; the {per_burst} best of this burst "
                     f"({', '.join(k['name'] for k in kept)}) scored higher")
                 r["duplicate_of"] = best["name"]
@@ -176,7 +201,7 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
         elif r["maybe"]:
             r["decision"], r["reasons"] = "maybe", r["maybe"] + r["notes"]
         else:
-            r["decision"], r["reasons"] = "pick", ["sharp and well exposed"] + r["notes"]
+            r["decision"], r["reasons"] = "pick", [_pick_reason(r, brief)] + r["notes"]
 
     if count:
         picks = sorted((r for r in rows.values() if r["decision"] == "pick" and r["forced"] != "keep"),

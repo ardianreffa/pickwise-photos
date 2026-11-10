@@ -10,11 +10,14 @@ REVIEW = {
         "every photo. Read-only: it never moves or changes files. Use it whenever the user wants "
         "to cull, sort, choose, pick or clean up photos. Translate the user's brief into the "
         "parameters, e.g. 'concert, dark is fine' -> keep_dark=true; 'motion blur is on purpose' "
-        "-> allow_soft=true; 'best 30 for Instagram' -> count=30; 'landscapes from my hike' -> "
+        "-> allow_soft=true; 'I want moody low-key shots' -> look=low_key; 'bright and airy' -> "
+        "look=high_key; 'best 30 for Instagram' -> count=30; 'landscapes from my hike' -> "
         "scene=scenery; 'keep the best 3 of each burst' -> per_burst=3. Pickwise measures focus anywhere in the frame; it cannot tell whether focus "
         "landed on the person or on the background. If the brief asks for something these "
         "parameters cannot judge (smiles, composition, who is in the photo, focus on the subject), "
-        "say so plainly instead of pretending. Reasons are in English; relay them in the user's language."
+        "say so plainly instead of pretending. Reasons are in English; relay them in the user's language. "
+        "Large folders (thousands of photos) are analysed over several calls: if the result says "
+        "in_progress, tell the user the progress and call again to continue."
     ),
     "parameters": {
         "type": "object",
@@ -33,13 +36,15 @@ REVIEW = {
                        "description": "Keep only the best photo(s) of each burst / near-duplicate group (default true). false keeps every frame."},
             "per_burst": {"type": "integer", "minimum": 1, "maximum": 20,
                           "description": "How many of the best frames to keep from each burst (default 1). Use it when the photographer bursts to choose between expressions or moments, e.g. 'keep the best 3 of each burst'."},
+            "look": {"type": "string", "enum": ["low_key", "high_key"],
+                     "description": "A look the user WANTS, not just tolerates: 'low_key' ranks darker, moody photos higher (and never rejects them for darkness); 'high_key' ranks bright, airy photos higher (and never rejects them for brightness). Use it for briefs like 'I want moody low-key shots' or 'bright and airy'. For 'dark is fine' use keep_dark instead."},
             "scene": {"type": "string", "enum": ["auto", "people", "scenery"],
                       "description": "What the photos are of. 'people' (portraits, events, sport, pets): one sharp area is enough, a blurred background is fine. 'scenery' (landscapes, architecture, interiors): most of the frame should be sharp. Default auto behaves like people. Ask the user if it is unclear and it matters."},
             "strictness": {"type": "string", "enum": ["relaxed", "normal", "strict"],
                            "description": "How strict the sharpness check is (default normal)."},
             "recursive": {"type": "boolean", "description": "Also look in subfolders (default false)."},
             "max_photos": {"type": "integer", "minimum": 1, "maximum": 10000,
-                           "description": "Safety cap on photos reviewed (default 2000)."},
+                           "description": "Safety cap on photos reviewed (default 10000)."},
             "brief_note": {"type": "string",
                            "description": "The user's brief in their own words, stored with the review for reference."},
         },
@@ -111,14 +116,19 @@ PREVIEW = {
     "name": "pickwise_preview",
     "description": (
         "Make local JPEG previews (from JPEG, HEIC/HEIF or RAW/DNG) of photos from the latest Pickwise "
-        "review, so you can take a visual second look with your vision tool: closed or half-closed "
-        "eyes, a subject blurred by motion while the background is sharp, missed focus on the person. "
-        "Pickwise itself cannot judge these. Use it when the user asks for such a check, e.g. 'check my "
-        "picks for closed eyes'. Viewing the previews with a vision tool sends them to the model "
-        "provider, so do that only at the user's request. Look at them one at a time, not in parallel, "
-        "because vision providers rate-limit bursts. Then report per photo and offer "
-        "pickwise_feedback (verdict reject) for photos the user wants to drop. The previews are written "
-        "only to Pickwise's own data folder."
+        "review, so you can take a visual second look with your vision tool at what Pickwise itself "
+        "cannot judge: closed or half-closed eyes; a subject blurred by motion while the background is "
+        "sharp; missed focus on the person; a frame with no subject; and clear composition mistakes "
+        "(a tilted horizon, a head or limbs cut off by the frame edge, something blocking the subject). "
+        "If the user asks, also expressions such as smiling. Point out mistakes; do not impose taste: "
+        "rule of thirds, colour and style are the photographer's choice unless they ask your opinion. "
+        "Call it ONLY when the user's current message asks for a "
+        "visual check (e.g. 'check my picks for closed eyes', 'which of my top 10 has a crooked "
+        "horizon'); never on your own initiative, never as a follow-up after a review, and an offer you "
+        "made earlier is not consent. Viewing the previews with a vision tool sends them to the model "
+        "provider. Look at them one at a time, not in parallel, because vision providers rate-limit "
+        "bursts. Then report per photo and offer pickwise_feedback (verdict reject) for photos the "
+        "user wants to drop. The previews are written only to Pickwise's own data folder."
     ),
     "parameters": {
         "type": "object",

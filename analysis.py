@@ -46,7 +46,7 @@ RAW_EXT = {
 }
 SUPPORTED_EXT = JPEG_EXT | HEIF_EXT | OTHER_EXT | RAW_EXT
 
-ANALYSIS_VERSION = 3  # bump when measurements change, so cached results are recomputed
+ANALYSIS_VERSION = 4  # bump when measurements change, so cached results are recomputed
 
 JPEG_FORMATS = {"JPEG", "MPO"}  # MPO = JPEG with extra frames (iPhone HDR gain maps)
 
@@ -59,6 +59,11 @@ _EXIF_DATETIME_ORIGINAL = 0x9003
 _EXIF_DATETIME = 0x0132
 _EXIF_IFD = 0x8769
 _EXIF_SUBSEC_ORIGINAL = 0x9291
+_EXIF_ORIENTATION = 0x0112
+_ORIENT_OPS = {2: [Image.Transpose.FLIP_LEFT_RIGHT], 3: [Image.Transpose.ROTATE_180],
+               4: [Image.Transpose.FLIP_TOP_BOTTOM], 5: [Image.Transpose.TRANSPOSE],
+               6: [Image.Transpose.ROTATE_270], 7: [Image.Transpose.TRANSVERSE],
+               8: [Image.Transpose.ROTATE_90]}
 
 
 @dataclass
@@ -144,8 +149,8 @@ def _largest_embedded_jpeg(data: bytes) -> Optional[Image.Image]:
     return None
 
 
-def open_photo(path: Path, kind: str) -> Image.Image:
-    """Open a photo (or a RAW file's embedded preview), upright, in RGB/L."""
+def open_photo(path: Path, kind: str, upright: bool = True) -> Image.Image:
+    """Open a photo (or a RAW file's embedded preview), upright unless asked not to."""
     if kind == "raw":
         with open(path, "rb") as fh:
             data = fh.read()
@@ -162,8 +167,7 @@ def open_photo(path: Path, kind: str) -> Image.Image:
             im.draft("RGB", (SHARP_SIZE * 2, SHARP_SIZE * 2))
         except Exception:
             pass
-    im = ImageOps.exif_transpose(im)
-    return im
+    return ImageOps.exif_transpose(im) if upright else im
 
 
 def _capture_time(im: Image.Image) -> Optional[float]:
@@ -290,14 +294,29 @@ def analyze(path: Path) -> PhotoMetrics:
     if size > MAX_FILE_BYTES:
         return _failed(path, kind, size, mtime, "file too large to analyze")
     try:
-        im = open_photo(path, kind)
+        # Memory: go to a small grayscale copy straight after decoding and drop the full
+        # colour image, instead of keeping (and rotating) a 48 MP RGB frame around.
+        im = open_photo(path, kind, upright=False)
         taken = _capture_time(im)
+        try:
+            orientation = int(im.getexif().get(_EXIF_ORIENTATION, 1))
+        except Exception:
+            orientation = 1
+        width, height = im.size
         gray = im.convert("L")
+        del im
+        longest = max(gray.size)
+        if longest > SHARP_SIZE * 2:
+            gray = gray.reduce(max(1, longest // (SHARP_SIZE * 2)))
+        for op in _ORIENT_OPS.get(orientation, []):
+            gray = gray.transpose(op)
+        if orientation in (5, 6, 7, 8):
+            width, height = height, width
         sharp, broad, detail = measure_sharpness(gray)
         ex = measure_exposure(gray)
         return PhotoMetrics(
             path=str(path), name=path.name, kind=kind, size=size, mtime=mtime,
-            width=im.size[0], height=im.size[1],
+            width=width, height=height,
             taken_at=taken if taken is not None else mtime,
             time_source="exif" if taken is not None else "mtime",
             sharpness=round(sharp, 3), sharpness_broad=round(broad, 3), detail=round(detail, 1),
@@ -337,3 +356,33 @@ def list_photos(folder: Path, recursive: bool, limit: int) -> tuple[list[Path], 
     found.sort(key=lambda p: str(p).lower())
     extra = max(0, len(found) - limit)
     return found[:limit], extra
+
+
+_PAIR_PREFERENCE = {"jpeg": 0, "heif": 1, "other": 2}
+
+
+def pair_files(paths: list[Path]) -> tuple[list[Path], dict[str, list[str]]]:
+    """Treat RAW + JPEG (or RAW + HEIC) shots of the same frame as one photo.
+
+    Cameras in RAW+JPEG mode write DSC01234.ARW and DSC01234.JPG side by side. They are
+    one photo: Pickwise judges the full-resolution JPEG (sharper evidence than the small
+    preview inside many RAW files) and moves both files together. Returns the photos to
+    analyse and, for each, the paths of its companion files.
+    """
+    groups: dict[tuple[str, str], list[Path]] = {}
+    for p in paths:
+        groups.setdefault((str(p.parent), p.stem.lower()), []).append(p)
+    primaries: list[Path] = []
+    companions: dict[str, list[str]] = {}
+    for members in groups.values():
+        raws = [p for p in members if kind_of(p) == "raw"]
+        others = [p for p in members if kind_of(p) != "raw"]
+        if raws and others:
+            others.sort(key=lambda p: (_PAIR_PREFERENCE.get(kind_of(p) or "other", 9), p.name))
+            primary = others[0]
+            primaries.append(primary)
+            companions[str(primary)] = [str(p) for p in sorted(raws + others[1:])]
+        else:
+            primaries.extend(members)
+    primaries.sort(key=lambda p: str(p).lower())
+    return primaries, companions
