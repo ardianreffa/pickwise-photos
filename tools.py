@@ -359,7 +359,7 @@ class Pickwise:
                     return _err("which must be picks, maybe or rejects")
                 rows = sorted((d for d in decisions if d["decision"] == bucket), key=lambda d: -d["score"])
                 missing = []
-            limit = max(1, min(PREVIEW_LIMIT, int(args.get("limit") or 12)))
+            limit = max(1, min(PREVIEW_LIMIT, int(args.get("limit") or 6)))
             total = len(rows)
             rows = rows[:limit]
             if not rows:
@@ -393,8 +393,9 @@ class Pickwise:
                 "not_found": missing,
                 "how_to_check": (
                     "Pickwise cannot see eyes, expressions or whether the subject itself is sharp. "
-                    "If the user asked for a visual check, look at each preview with your vision tool "
-                    "and ask: are the subject's eyes closed or half closed, is the person or main "
+                    "If the user asked for a visual check, look at the previews with your vision tool "
+                    "ONE AT A TIME, not in parallel (vision providers rate-limit bursts), and ask: "
+                    "is there a person, are their eyes closed or half closed, is the person or main "
                     "subject blurred by motion or missed focus, is anything else clearly wrong? "
                     "Then report per photo and offer pickwise_feedback (verdict reject) for the ones "
                     "the user agrees to drop."),

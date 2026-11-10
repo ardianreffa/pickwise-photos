@@ -116,7 +116,8 @@ PREVIEW = {
         "eyes, a subject blurred by motion while the background is sharp, missed focus on the person. "
         "Pickwise itself cannot judge these. Use it when the user asks for such a check, e.g. 'check my "
         "picks for closed eyes'. Viewing the previews with a vision tool sends them to the model "
-        "provider, so do that only at the user's request, then report per photo and offer "
+        "provider, so do that only at the user's request. Look at them one at a time, not in parallel, "
+        "because vision providers rate-limit bursts. Then report per photo and offer "
         "pickwise_feedback (verdict reject) for photos the user wants to drop. The previews are written "
         "only to Pickwise's own data folder."
     ),
@@ -128,7 +129,7 @@ PREVIEW = {
             "photos": {"type": "array", "items": {"type": "string"},
                        "description": "Specific file names to preview instead of a pile (e.g. ['IMG_7424.DNG'])."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 40,
-                      "description": "Maximum number of previews (default 12)."},
+                      "description": "Maximum number of previews (default 6; more means more vision calls)."},
             "plan_id": {"type": "string", "description": "Review id (default: the latest review)."},
         },
     },

@@ -20,8 +20,9 @@ description: How to cull a folder of photos with Pickwise Photos, from brief to 
    on the person or on the background; say so if the brief asks for that.
    **Visual second look (opt-in).** If the user asks you to check picks for closed eyes, a
    blurred subject or focus on the background ("check my picks for closed eyes"), call
-   `pickwise_preview` (default: the top 12 picks; or `photos: [...]`), then look at each
-   preview with your vision tool and report per photo. Say once that this sends those
+   `pickwise_preview` (default: the top 6 picks; or `photos: [...]`), then look at the
+   previews with your vision tool one at a time, never in parallel (providers rate-limit
+   bursts), and report per photo. Say once that this sends those
    previews to the model provider. Never do it on your own initiative or for a whole folder.
    Offer `pickwise_feedback` with `verdict: reject` for photos the user wants to drop; the
    next best frame of the same burst then takes its place on the next review.
