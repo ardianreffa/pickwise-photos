@@ -23,6 +23,8 @@ DARK_MEAN = 40.0         # mean luminance below this, with no bright area -> too
 LOWKEY_MEAN, LOWKEY_DARK = 75.0, 0.50   # mostly dark ...
 SILHOUETTE_BRIGHT = 0.03                 # ... with a bright area -> silhouette / low-key
 BRIGHT_MEAN, BRIGHT_CLIPPED = 200.0, 0.25
+UNDER_MEAN = 70.0         # darker than this (but not near-black): a bit underexposed
+OVER_MEAN = 185.0         # brighter than this (but not blown out): a bit overexposed
 PARTLY_BLOWN = 0.20      # share of pure white that makes a photo a "maybe"
 WHITE_NOTE = 0.10        # above this, just mention it
 
@@ -77,6 +79,13 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
             notes.append("dark, allowed by your brief")
         else:
             reject.append("too dark: most of the photo is close to black")
+    elif mean < UNDER_MEAN:
+        # Underexposed but with detail: never thrown away (an edit can rescue it, especially
+        # from RAW), never silently called "well exposed" either.
+        if dark_ok:
+            notes.append("darker than usual, allowed by your brief")
+        else:
+            maybe.append("a bit underexposed: fixable in editing, especially from RAW")
     if mean > BRIGHT_MEAN and clipped > BRIGHT_CLIPPED:
         if bright_ok:
             notes.append("very bright, allowed by your brief")
@@ -84,6 +93,11 @@ def _flags(m: dict, brief: dict, prefs: dict) -> tuple[list[str], list[str], lis
             reject.append("too bright: large areas are blown out to white")
     elif clipped > PARTLY_BLOWN and not bright_ok:
         maybe.append(f"partly blown out: {round(clipped * 100)}% of the photo is pure white")
+    elif mean > OVER_MEAN:
+        if bright_ok:
+            notes.append("brighter than usual, allowed by your brief")
+        else:
+            maybe.append("a bit overexposed: check the highlights")
     elif clipped > WHITE_NOTE and not bright_ok:
         notes.append(f"{round(clipped * 100)}% of the photo is pure white (sky or highlights)")
     return reject, maybe, notes
@@ -144,7 +158,10 @@ def _pick_reason(r: dict, brief: dict) -> str:
         return "sharp, with the low-key look you asked for"
     if look == "high_key" and r["brightness"] > 160:
         return "sharp, with the bright high-key look you asked for"
-    return "sharp and well exposed"
+    exposure_notes = any(w in n for n in r["notes"]
+                         for w in ("dark", "bright", "white", "low-key", "silhouette"))
+    # Only claim "well exposed" when nothing about the exposure was noted.
+    return "sharp" if exposure_notes else "sharp and well exposed"
 
 
 def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[dict] = None,

@@ -52,7 +52,8 @@ then paste it into your message.
 2. **Optional visual second look (Hermes).** Pickwise cannot see eyes, expressions or
    composition. When you ask, it makes small previews of the top picks and Hermes looks at
    them with its own vision tool. Only those previews leave your computer, and only then.
-3. **You decide.** Disagree with anything, and Pickwise remembers. Nothing moves until you
+3. **You decide.** Pickwise rejects only what can't be fixed (blur, near-black or blown-out
+   frames) and labels what an edit could rescue. Disagree with anything, and Pickwise remembers. Nothing moves until you
    confirm, originals are never edited, and moves can be undone.
 
 ## What you can ask for
@@ -80,7 +81,7 @@ has learned and `/pickwise reset` forgets it.
 | Check | How |
 |---|---|
 | Focus and camera shake | A "re-blur" test on the most detailed parts of the photo: a sharp photo loses most of its fine detail when blurred a little more, a blurry one barely changes. A sharp subject on a soft background still counts as sharp. |
-| Exposure | Too dark, blown-out highlights, and low-key or silhouette shots, which become "maybe" instead of being rejected. |
+| Exposure | Pickwise rejects what an edit can't fix (near-black frames, large blown-out areas) and keeps what it can: a photo that is a bit under- or overexposed becomes "maybe" with that reason ("a bit underexposed: fixable in editing, especially from RAW"), never a silent "well exposed". Low-key and silhouette shots become "maybe" too, and "dark is fine" or "low-key" in your brief turns them into picks. |
 | Bursts and near-duplicates | Capture time (to the fraction of a second) plus a perceptual hash, frame to frame: a photo joins a burst only if it was taken within 2 seconds of the previous one and looks like it. The pause while a subject changes pose starts a new group, so every pose keeps its best frame. |
 | Ranking | A 0–100 score from sharpness and exposure (or closeness to the look you asked for), used for "best N" and inside bursts. |
 

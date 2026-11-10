@@ -429,3 +429,14 @@ def test_raw_jpeg_pairs_travel_together(tmp_path, monkeypatch):
     assert {p.name for p in picks.iterdir()} == {"DSC00000.JPG", "DSC00000.ARW", "DSC00001.JPG", "DSC00001.ARW"}
     undo = _json.loads(pw.undo({}))
     assert undo["restored"] == 4 and (shoot / "DSC00001.ARW").exists()
+
+
+def test_underexposed_is_maybe_and_never_called_well_exposed(folder):
+    t = datetime(2026, 11, 8, 19, 0, 0)
+    save(ImageEnhance.Brightness(scene(50)).enhance(0.45), folder / "under.jpg", t)
+    m = metrics(folder)
+    d = by_name(engine.decide(m))
+    under = d["under.jpg"]
+    assert under["decision"] == "maybe" and "underexposed" in under["reasons"][0]
+    ok = by_name(engine.decide(m, {"keep_dark": True}))["under.jpg"]
+    assert ok["decision"] == "pick" and "well exposed" not in ok["reasons"][0]
