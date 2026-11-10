@@ -72,6 +72,7 @@ Just ask Hermes, for example:
 - "Cull ~/Desktop/wedding-raw, keep 50, motion blur is fine"
 - "Pick the sharpest landscapes from ~/Pictures/hike" (uses `scene: scenery`)
 - "Why did you reject IMG_2041?" / "Keep IMG_2041, I like it"
+- "Check my top picks for closed eyes or a blurry subject" (visual second look, see below)
 - "Copy the picks into folders" / "Write ratings for Lightroom"
 
 Or type `/pickwise ~/Pictures/bali-trip` for a quick review (`/pickwise prefs` shows what it
@@ -86,6 +87,7 @@ has learned, `/pickwise reset` forgets it).
 | `pickwise_feedback` | Records your correction for one photo and adjusts future reviews. | No |
 | `pickwise_preferences` | Shows or resets what Pickwise has learned. | No |
 | `pickwise_undo` | Moves photos back after a `move`. | Moves files back |
+| `pickwise_preview` | Makes local JPEG previews (also from HEIC and RAW/DNG) of the picks or of named photos, so Hermes can take a visual second look with its vision tool when you ask: closed eyes, a blurred subject, focus on the background. | Previews in Pickwise's own data folder only |
 
 ### Lightroom and darktable
 
@@ -96,6 +98,14 @@ sidecars for RAW files (`IMG_0001.xmp`); darktable reads them for every format
 Pickwise never edits, so for those use `copy` mode and import the `Picks` folder. Existing
 sidecars are never replaced.
 
+### Visual second look
+
+Pickwise measures focus, exposure and duplicates; it cannot see eyes or tell the subject from
+the background. Ask Hermes to "check my picks for closed eyes" and it runs `pickwise_preview`,
+looks at each preview with its own vision tool, and tells you which ones to drop. Pickwise only
+makes the previews; viewing them sends those images to your model provider, so it happens only
+when you ask. Rejecting a burst frame lets the next best frame of that burst take its place.
+
 ## Privacy, safety and disclosure
 
 - **Reads:** only the folder you name (and its subfolders if you ask), and only image files.
@@ -104,7 +114,11 @@ sidecars are never replaced.
   `move` is reversible with `pickwise_undo`. No photo is ever deleted, overwritten or edited.
 - **Stores** in Hermes' plugin data folder (`~/.hermes/plugin-data/pickwise-photos/`): a cache
   of per-photo measurements (sharpness, brightness, a 64-bit image hash, capture time, file
-  path), review reports, and your learned preferences and corrections. No image data.
+  path), review reports, your learned preferences and corrections, and, only when
+  `pickwise_preview` is used, downsized JPEG previews of the photos you chose (the last three
+  sets are kept).
+- **Vision check:** Pickwise never sends anything. If you ask Hermes for a visual second look,
+  Hermes' own vision tool sends the previews you chose to your model provider.
 - **No network access, no model calls, no shell commands, no telemetry.** All analysis runs
   locally with Pillow.
 - The `move` mode and the `xmp` mode change your folder's contents, so Hermes is instructed to
@@ -117,8 +131,7 @@ Pickwise judges focus, exposure and duplicates. It does not judge composition, e
 smiles or closed eyes, and it does not recognise people; Hermes will say so if your brief
 asks for that. Because it does not know where the person is, it cannot tell whether focus
 landed on the subject or on the background: a sharp tree behind a soft face still reads as
-"sharp". For a handful of photos you can ask Hermes to look at them with its own vision
-tool, which sends those images to your model provider, so it only happens when you ask. Very noisy night shots can look sharper than they are. RAW files are judged
+"sharp". Use the visual second look above for the photos that matter. Very noisy night shots can look sharper than they are. RAW files are judged
 from their embedded preview, which reflects the camera's own processing.
 
 ## Development

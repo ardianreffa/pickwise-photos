@@ -203,3 +203,21 @@ def test_learning_is_gradual():
     decision = {"decision": "maybe", "reasons": ["blurry in most of the frame (motion or missed focus): check it"]}
     prefs, change = engine.learn({}, decision, "keep", {"sharpness": 0.05, "brightness": 120})
     assert 0.84 <= prefs["blur_scale"] < 1.0 and "a little" in change
+
+
+def test_rejected_burst_frame_is_replaced(folder):
+    m = metrics(folder)
+    first = by_name(engine.decide(m))
+    winner = next(f"burst_{i}.jpg" for i in range(3) if first[f"burst_{i}.jpg"]["decision"] == "pick")
+    path = first[winner]["path"]
+    again = by_name(engine.decide(m, {}, {}, {path: "reject"}))
+    assert again[winner]["decision"] == "reject"
+    assert sum(again[f"burst_{i}.jpg"]["decision"] == "pick" for i in range(3)) == 1
+
+
+def test_keep_override_survives_count(folder):
+    m = metrics(folder)
+    blurry = next(x["path"] for x in m if x["name"] == "blurry.jpg")
+    d = by_name(engine.decide(m, {"count": 1}, {}, {blurry: "keep"}))
+    assert d["blurry.jpg"]["decision"] == "pick"
+    assert sum(x["decision"] == "pick" for x in d.values()) == 1

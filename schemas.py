@@ -107,3 +107,29 @@ UNDO = {
         "properties": {"plan_id": {"type": "string", "description": "Review id (default: the latest review)."}},
     },
 }
+
+PREVIEW = {
+    "name": "pickwise_preview",
+    "description": (
+        "Make local JPEG previews (from JPEG, HEIC/HEIF or RAW/DNG) of photos from the latest Pickwise "
+        "review, so you can take a visual second look with your vision tool: closed or half-closed "
+        "eyes, a subject blurred by motion while the background is sharp, missed focus on the person. "
+        "Pickwise itself cannot judge these. Use it when the user asks for such a check, e.g. 'check my "
+        "picks for closed eyes'. Viewing the previews with a vision tool sends them to the model "
+        "provider, so do that only at the user's request, then report per photo and offer "
+        "pickwise_feedback (verdict reject) for photos the user wants to drop. The previews are written "
+        "only to Pickwise's own data folder."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "which": {"type": "string", "enum": ["picks", "maybe", "rejects"],
+                      "description": "Which pile to preview, best first (default picks)."},
+            "photos": {"type": "array", "items": {"type": "string"},
+                       "description": "Specific file names to preview instead of a pile (e.g. ['IMG_7424.DNG'])."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 40,
+                      "description": "Maximum number of previews (default 12)."},
+            "plan_id": {"type": "string", "description": "Review id (default: the latest review)."},
+        },
+    },
+}

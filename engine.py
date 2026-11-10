@@ -141,17 +141,26 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
     for gi, group in enumerate(group_bursts(metrics), start=1):
         for m in group:
             reject, maybe, notes = _flags(m, brief, prefs)
+            verdict = overrides.get(m["path"])
+            if verdict == "reject":
+                reject, maybe, notes = ["you marked this one as a reject"], [], []
+            elif verdict == "keep":
+                reject, maybe, notes = [], [], []
             rows[m["path"]] = {
                 "name": m["name"], "path": m["path"], "kind": m["kind"],
                 "group": gi, "group_size": len(group), "score": quality_score(m, brief.get("scene", "")),
                 "reject": reject, "maybe": maybe, "notes": notes,
                 "sharpness": m["sharpness"], "brightness": m["brightness"],
+                "forced": verdict,
             }
         candidates = [rows[m["path"]] for m in group if not rows[m["path"]]["reject"]]
         if dedupe and len(candidates) > per_burst:
-            ranked = sorted(candidates, key=lambda r: (not r["maybe"], r["score"]), reverse=True)
+            ranked = sorted(candidates, key=lambda r: (r["forced"] == "keep", not r["maybe"], r["score"]),
+                            reverse=True)
             kept, best = ranked[:per_burst], ranked[0]
             for r in ranked[per_burst:]:
+                if r["forced"] == "keep":
+                    continue
                 r["maybe"].append(
                     f"near-duplicate of {best['name']}, which scored higher "
                     f"({best['score']} vs {r['score']})" if per_burst == 1 else
@@ -160,7 +169,9 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
                 r["duplicate_of"] = best["name"]
 
     for r in rows.values():
-        if r["reject"]:
+        if r["forced"] == "keep":
+            r["decision"], r["reasons"] = "pick", ["you marked this one as a keeper"]
+        elif r["reject"]:
             r["decision"], r["reasons"] = "reject", r["reject"] + r["notes"]
         elif r["maybe"]:
             r["decision"], r["reasons"] = "maybe", r["maybe"] + r["notes"]
@@ -168,23 +179,16 @@ def decide(metrics: list[dict], brief: Optional[dict] = None, prefs: Optional[di
             r["decision"], r["reasons"] = "pick", ["sharp and well exposed"] + r["notes"]
 
     if count:
-        picks = sorted((r for r in rows.values() if r["decision"] == "pick"),
+        picks = sorted((r for r in rows.values() if r["decision"] == "pick" and r["forced"] != "keep"),
                        key=lambda r: r["score"], reverse=True)
-        for r in picks[int(count):]:
+        kept = sum(1 for r in rows.values() if r["forced"] == "keep")
+        for r in picks[max(0, int(count) - kept):]:
             r["decision"] = "maybe"
             r["reasons"] = [f"good, but outside your top {int(count)}"] + r["notes"]
 
-    for path, verdict in overrides.items():
-        r = rows.get(path)
-        if r is None:
-            continue
-        if verdict == "keep":
-            r["decision"], r["reasons"] = "pick", ["you marked this one as a keeper"]
-        elif verdict == "reject":
-            r["decision"], r["reasons"] = "reject", ["you marked this one as a reject"]
 
     for r in rows.values():
-        for key in ("reject", "maybe", "notes"):
+        for key in ("reject", "maybe", "notes", "forced"):
             r.pop(key, None)
     order = {m["path"]: i for i, m in enumerate(sorted(metrics, key=lambda m: (m["taken_at"], m["name"].lower())))}
     return sorted(rows.values(), key=lambda r: order[r["path"]])

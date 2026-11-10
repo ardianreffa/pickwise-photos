@@ -22,6 +22,8 @@ def register(ctx):
                       handler=pw.preferences, emoji="⚙️")
     ctx.register_tool(name="pickwise_undo", toolset=TOOLSET, schema=schemas.UNDO,
                       handler=pw.undo, emoji="↩️")
+    ctx.register_tool(name="pickwise_preview", toolset=TOOLSET, schema=schemas.PREVIEW,
+                      handler=pw.preview, emoji="🔍")
     ctx.register_command("pickwise", handler=pw.slash,
                          description="Review a photo folder: /pickwise <folder> | prefs | reset")
     skill = Path(__file__).parent / "skills" / "pickwise" / "SKILL.md"

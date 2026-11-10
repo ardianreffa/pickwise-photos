@@ -27,6 +27,9 @@ OUT_DIR = "Pickwise"
 BUCKETS = {"pick": "Picks", "maybe": "Maybe", "reject": "Rejects"}
 XMP_RATING = {"pick": ("5", "Green"), "maybe": ("3", "Yellow"), "reject": ("-1", "Red")}
 MAX_PHOTOS_DEFAULT = 2000
+PREVIEW_EDGE = 1568      # long edge of preview JPEGs: what vision models actually look at
+PREVIEW_LIMIT = 40
+KEEP_PREVIEW_SETS = 3
 LIST_LIMIT = 40
 KEEP_PLANS = 10
 
@@ -331,6 +334,75 @@ class Pickwise:
                         "recent_feedback": history[-10:]})
         except Exception as exc:
             return _err(f"preferences failed: {exc}")
+
+    def preview(self, args: dict, **_: Any) -> str:
+        """Make JPEG previews (from JPEG, HEIC or RAW) for a visual second look.
+
+        Only writes inside Pickwise's own data folder. Nothing is sent anywhere:
+        the agent decides, with the user's consent, whether to look at them.
+        """
+        try:
+            plan = self._get_plan(args.get("plan_id"))
+            if plan is None:
+                return _err("no review found; run pickwise_review first")
+            which = (args.get("which") or "picks").lower()
+            bucket = {"picks": "pick", "maybe": "maybe", "rejects": "reject"}.get(which)
+            wanted = [str(n).strip().lower() for n in (args.get("photos") or []) if str(n).strip()]
+            decisions = plan["decisions"]
+            if wanted:
+                rows = [d for d in decisions
+                        if d["name"].lower() in wanted or Path(d["name"]).stem.lower() in wanted]
+                missing = [w for w in wanted if not any(
+                    w in (d["name"].lower(), Path(d["name"]).stem.lower()) for d in rows)]
+            else:
+                if bucket is None:
+                    return _err("which must be picks, maybe or rejects")
+                rows = sorted((d for d in decisions if d["decision"] == bucket), key=lambda d: -d["score"])
+                missing = []
+            limit = max(1, min(PREVIEW_LIMIT, int(args.get("limit") or 12)))
+            total = len(rows)
+            rows = rows[:limit]
+            if not rows:
+                return _err("no photos to preview", missing=missing)
+            from plugins.plugin_storage import plugin_data_dir
+
+            base = plugin_data_dir(PLUGIN) / "previews"
+            out = base / plan["id"]
+            out.mkdir(parents=True, exist_ok=True)
+
+            def make(d: dict) -> dict:
+                src = Path(d["path"])
+                dest = out / (src.stem + ".jpg")
+                try:
+                    if not dest.exists():
+                        im = analysis.open_photo(src, analysis.kind_of(src) or "other").convert("RGB")
+                        im.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE))
+                        im.save(dest, "JPEG", quality=85)
+                    return {"name": d["name"], "preview": str(dest), "decision": d["decision"],
+                            "reasons": d["reasons"]}
+                except Exception as exc:
+                    return {"name": d["name"], "error": f"could not make a preview: {exc}"}
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                previews = list(pool.map(make, rows))
+            sets = sorted((p for p in base.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
+            for old in sets[:-KEEP_PREVIEW_SETS]:
+                shutil.rmtree(old, ignore_errors=True)
+            return _ok({
+                "plan_id": plan["id"], "previews": previews, "shown": len(rows), "available": total,
+                "not_found": missing,
+                "how_to_check": (
+                    "Pickwise cannot see eyes, expressions or whether the subject itself is sharp. "
+                    "If the user asked for a visual check, look at each preview with your vision tool "
+                    "and ask: are the subject's eyes closed or half closed, is the person or main "
+                    "subject blurred by motion or missed focus, is anything else clearly wrong? "
+                    "Then report per photo and offer pickwise_feedback (verdict reject) for the ones "
+                    "the user agrees to drop."),
+                "privacy": ("These files are local previews. Looking at them with a vision tool sends "
+                            "them to the model provider, so only do it when the user asked for it."),
+            })
+        except Exception as exc:
+            return _err(f"preview failed: {exc}")
 
     # ── slash command ───────────────────────────────────────────────────────
 
